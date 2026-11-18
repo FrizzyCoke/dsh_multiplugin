@@ -6,6 +6,7 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-17 | [桌宠主动搭话永远 busy + 看屏幕记忆写入](2026-11-17-pet-purpose-busy-and-screen-memory.md) | `busy: running` 自己挡自己；新 `mcp-memory-write` + `screen` 平台带细节进记忆卡 | 待发布 |
 | 2026-11-06 | [多模型重建索引（本地/云端多选）](2026-11-06-multi-model-index-picker.md) | 弹窗多选；已有索引标注；本地走 runtime、云端直连；不改 active provider | 待发布 |
 | 2026-11-06 | [向量记忆库：最近记录 + 语义搜索](2026-11-06-vector-memory-library.md) | 只读记忆库；最近 30 条 + 一句话搜旧事；默认隐藏敏感 | 待发布 |
 | 2026-11-05 | [向量记忆 UI/自检/完整重建](2026-11-05-vector-memory-ui-self-test.md) | 本地/云端 Tab；radio + 一键启动；真实 embedding 自检；stale 检测；重建到 pending=0 | 待发布 |
@@ -96,3 +97,5 @@
 
 > 更早的坑（更新检查误报、主题对比度、桌宠数据被删等）见 [`../PITFALLS.md`](../PITFALLS.md)；
 > 那份是"按坑记"，这里按"按 bug 记"，两者互补。
+| 2026-11-18 | [存储上限 + ffmpeg 改为可选](2026-11-18-storage-ffmpeg.md) | 截图自动清理（只清自己的）、B站缓存 1 天/100MB、缺 ffmpeg 不再整趟只读 |
+| 2026-11-18 | [桌宠的生活 + 懂他](2026-11-18-pet-life-know-you.md) | 心情上脸、跟作息睡、B站反应、他的观看历史、按他的反应调分享门槛、记住日子 |
