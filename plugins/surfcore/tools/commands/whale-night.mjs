@@ -118,6 +118,9 @@ function planFromSlot(state, slot) {
     warnings: Array.isArray(state.warnings) ? state.warnings : [],
     action: slot.action,
     fired: false,
+    // 2026-11-18：上一趟醒过留下的 woke:true 会被 ...state 带过来 → 生物钟每分钟都当「已醒、该重算」，
+    // 这趟被一直往后推（14:47→14:49→14:55…），一天只醒得了第一次。新的一趟一律从「没醒」开始。
+    woke: false,
     done: false,
     at: slot.at,
     atText: slot.atText,

@@ -207,4 +207,38 @@ ok('设置页保存：作息性格字段原样保留', () => {
   fs.rmSync(home, { recursive: true, force: true });
 }
 
+// ⑤ 2026-11-18 真机：醒过一次后 woke:true 被带进下一趟的计划 → 生物钟每分钟重算、这趟一直往后推，一天只醒第一次。
+{
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'whale-woke-'));
+  const cfgFile = path.join(home, 'bili.config.json');
+  fs.writeFileSync(cfgFile, JSON.stringify({ night: { windows: [{ start: '00:00', end: '24:00', wakes: 2, skipChance: 0 }] } }));
+  const env = { ...process.env, DSH_HOME: home, SURFCORE_BILI_CONFIG: cfgFile };
+  const cwd = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+  const stateFile = spawnSync(process.execPath, ['--input-type=module', '-e', "import { biliState } from './tools/lib/state-paths.mjs'; process.stdout.write(biliState('whale-night.json'))"], { env, encoding: 'utf8', cwd }).stdout;
+  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+  const d = new Date();
+  const nowMin = d.getHours() * 60 + d.getMinutes();
+  // 上一趟已醒（woke:true、fired:true），下一趟还在今天后面（若现在已过 23:50，就放在 24:00 之前一点）
+  const nextAt = Math.min(nowMin + 5, 1439);
+  fs.writeFileSync(stateFile, JSON.stringify({
+    date: d.toLocaleDateString('sv-SE'), action: 'wake', fired: true, woke: true, wakes: 1, watchWakes: 1, slotId: 's1',
+    slots: [
+      { id: 's1', window: '00:00–24:00', start: 0, end: 1440, at: 1, atText: '00:01', kind: 'base', action: 'wake', status: 'fired', energyApplied: true, energy: 100 },
+      { id: 's2', window: '00:00–24:00', start: 0, end: 1440, at: nextAt, atText: 'x', kind: 'extra', action: 'wake', status: 'pending', energyApplied: true, energy: 100, maxVideos: 4 },
+    ],
+  }));
+  ok('醒过一趟后重算下一趟：woke 清成 false（不然生物钟每分钟都重算、永远不叫醒）', () => {
+    const script = path.join(cwd, 'tools', 'commands', 'whale-night.mjs');
+    const r = spawnSync(process.execPath, [script, 'plan'], { env, encoding: 'utf8', cwd, timeout: 20000 });
+    const st = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.equal(st.slotId, 's2', r.stdout + r.stderr);
+    assert.equal(st.woke, false); assert.equal(st.fired, false); assert.equal(st.action, 'wake');
+  });
+  fs.rmSync(home, { recursive: true, force: true });
+}
+
 console.log(`night schedule: ${passed} passed`);
