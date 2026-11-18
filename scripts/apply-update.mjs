@@ -82,6 +82,9 @@ function copyZip(staging, target) {
   const argv = [
     staging, target,
     '/E',
+    // 2026-11-18：robocopy 默认跳过「大小 + 时间都一样」的文件 → 改了内容但长度不变、时间撞上的文件会被静默跳过
+    // （test-update-apply-result 时好时坏：0.7.0 → 9.9.9 同长度、同一时刻写入）。/IS /IT：一律覆盖，不靠比较。
+    '/IS', '/IT',
     '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/R:2', '/W:1',
     '/XD', ...exDirs,
     '/XF', ...exFiles,
