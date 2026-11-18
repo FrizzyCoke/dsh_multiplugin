@@ -310,7 +310,7 @@ export function apply(ctx) {
     onUserMessage: (text, options) => screenWatch.onUserMessage(text, options),
     extraSystem: () => screenWatch.dshPetHint(),
     // 「往左走」「过来」→ 她真的走过去（lib/pet-move.js；每条桌宠消息多一次很小的判断）。
-    onMoveIntent: (text, petId) => { petOwnerSpoke(); petMove.onUserMessage(text, petId); },
+    onMoveIntent: (text, petId) => { petOwnerSpoke(); return petMove.decide(text, petId); },
   });
   // 心情（tools/lib/mood.mjs，B站 那份 mood.json 是唯一状态）：桌宠这边的对话也算进去（2026-11-18 用户）。
   const biliMoodCfg = () => { try { return JSON.parse(fs.readFileSync(BILI_CONFIG, 'utf8')).mood ?? {}; } catch { return {}; } };

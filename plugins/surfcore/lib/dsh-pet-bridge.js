@@ -147,8 +147,11 @@ export function createDshPetBridge({ ctx, chat, readConfig, currentDshUrl, dshPe
     // 要不要现看屏幕由模型判断（screen-watch 后台）；dsh-pet 只给 recall 1.5 秒，这里最多等 1 秒拿判断：
     //   要看 → 这一句只说「我瞅瞅」，看完的答案随后补上；不用看 → 正常聊；没等到 → 退回「等下我看一眼」的提示。
     let need = null;
-    // 挪位置（lib/pet-move.js）：后台判断 + 走过去，不耽误她回话。
-    try { onMoveIntent?.(String(userText ?? ''), String(petId)); } catch {}
+    // 挪位置（lib/pet-move.js）：在她回话之前判断（和看屏幕的判断并行，最多等 1.1 秒）。
+    // 要挪就让她回话末尾带 dsh-pet 自带的走位动作，由 dsh-pet 自己走（插件不发任何位移指令）。
+    const recallStart = Date.now();
+    let movePromise = null;
+    try { movePromise = onMoveIntent ? Promise.resolve(onMoveIntent(String(userText ?? ''), String(petId))).catch(() => null) : null; } catch {}
     const skipScreen = takeSuppressed(userText);
     try {
       const decision = skipScreen ? null : onUserMessage?.(String(userText ?? ''), { onAnswer: (answer) => recordReply(String(petId), answer) });
@@ -161,7 +164,13 @@ export function createDshPetBridge({ ctx, chat, readConfig, currentDshUrl, dshPe
     } else if (need === null) {
       try { extra = String(extraSystem?.() || '').trim(); } catch {}
     }
-    const moveHint = onMoveIntent ? '\n\n【挪位置】他让你往左 / 往右 / 过来时，你真的会走过去：回一句「来了」「走着」就行，别说你动不了。' : '';
+    let moveHint = '';
+    if (movePromise) {
+      const decided = await Promise.race([movePromise, new Promise((resolve) => { const t = setTimeout(() => resolve(null), Math.max(0, 1300 - (Date.now() - recallStart))); t.unref?.(); })]);
+      if (decided?.action) {
+        moveHint = `\n\n【挪位置】他让你挪地方，你已经转过身准备走了。只回一两个字表示收到，比如「好」「行」「ok」「嗯」，**别复述他说的方向或内容**；回复最后一行写 [动作:${decided.action}]（就是你走过去的动作，必须写）。`;
+      }
+    }
     return { system: `${base}${extra ? `\n\n${extra}` : ''}${moveHint}\n\n【桌宠环境（dsh-pet 动画桌宠）】\n${String(system ?? '').trim()}` };
   }
 

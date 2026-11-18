@@ -12,6 +12,7 @@ const DIRS = ['left', 'right', 'center', 'leftedge', 'rightedge', 'otherside', '
 // 走路用 dsh-pet 自己的跑步动画（它的 moves 里就是这个；起步约 1.75 秒后才开始位移）
 export const WALK_ANIM = '螃蟹走路';  // dsh-pet moves.actions 里的走路（近）
 export const RUN_ANIM = '原地左转奔跑'; // 跑（远）
+export const IDLE_ANIM = '待机呼吸休闲'; // 只转身时播的原地待机
 export const WALK_LEAD_MS = 1750;
 
 export function normalizePetMoveConfig(raw) {
@@ -119,28 +120,49 @@ export function createPetMove({ chat, readConfig, currentDshUrl, pluginLog = () 
   }
 
   /** 联动 recall 里调：不阻塞她回话（判断 + 走路在后台）。 */
-  function onUserMessage(text, petId = 'main') {
+  /**
+   * 2026-11-18（用户：「用它自带的走路，不是你的输入」）：
+   * 走不再由插件驱动。dsh-pet 回话末尾的 [动作:X] 会被它自己播（writePet anim → onMenuAction），
+   * X 是走位动作（螃蟹走路 / 原地左转奔跑）时它会 tryMove —— 用自带的走路动画、朝当前朝向真走。
+   * 所以这里只做两件事：① 在她回话之前判断要不要挪、往哪挪（顺带语气）；② 要挪就先把她转到那个方向（只转身、不位移）。
+   * 走哪个动作交给联动在 recall 里写进她的 system（她回话时自己带上 [动作:…]）。
+   * @returns {Promise<{ dir: string|null, action: string|null, facing: string|null, tone: string }>}
+   */
+  async function decide(text, petId = 'main') {
+    const none = { dir: null, action: null, facing: null, tone: 'neutral' };
     const moveOn = cfg().enabled;
     let toneOn = false;
     try { toneOn = toneEnabled() === true; } catch {}
-    if ((!moveOn && !toneOn) || !String(text ?? '').trim()) return;
-    void (async () => {
-      try {
-        const { dir: rawDir, tone } = await classify(text);
-        const dir = moveOn ? rawDir : null;
-        last = { at: Date.now(), text: String(text).slice(0, 40), dir, tone, ok: null, error: '' };
-        if (toneOn && tone !== 'neutral') { try { onTone?.(tone, TONES[tone], text); } catch {} }
-        if (!dir) return;
-        const r = await move(petId, dir);
-        last = { ...last, ok: r.ok, error: r.ok ? '' : `${r.code}: ${r.error}` };
-        pluginLog(r.ok ? `[pet-move] 「${last.text}」→ ${dir}，走到 x=${r.x}` : `[pet-move] 「${last.text}」→ ${dir} 没走成（${r.code}）：${r.error}`);
-      } catch (error) {
-        last = { ...last, ok: false, error: `petmove.failed: ${String(error?.message ?? error).slice(0, 120)}` };
-        pluginLog('[pet-move] 失败：', String(error?.message ?? error).slice(0, 120));
-      }
-    })();
+    if ((!moveOn && !toneOn) || !String(text ?? '').trim()) return none;
+    try {
+      const { dir: rawDir, tone } = await classify(text);
+      const dir = moveOn ? rawDir : null;
+      last = { at: Date.now(), text: String(text).slice(0, 40), dir, tone, ok: null, error: '' };
+      if (toneOn && tone !== 'neutral') { try { onTone?.(tone, TONES[tone], text); } catch {} }
+      if (!dir) return { ...none, tone };
+      const q = `pet=${encodeURIComponent(petId)}`;
+      const pose = await call('/pose', q);
+      if (pose?.ok !== true) { last = { ...last, ok: false, error: 'petmove.no-desktop' }; return { ...none, tone }; }
+      const from = Number.isFinite(Number(pose.x)) ? Number(pose.x) : 0.5;
+      const target = targetX(from, dir);
+      const facing = dir === 'left' || dir === 'leftedge' || (dir !== 'right' && dir !== 'rightedge' && target < from) ? 'left' : 'right';
+      // 「往左 / 往右」走；「往那边去 / 走开点」跑；「到中间 / 到边上」远就跑、近就走
+      const action = dir === 'otherside' ? RUN_ANIM : (dir === 'left' || dir === 'right') ? WALK_ANIM : (Math.abs(target - from) > 0.2 ? RUN_ANIM : WALK_ANIM);
+      // 只转身：播一下原地待机并带上朝向（dsh-pet 的 /anim 会先设 facing 再播）；走由她回话的 [动作] 触发
+      if (pose.facing !== facing) await call('/anim', q, { name: IDLE_ANIM, facing });
+      last = { ...last, ok: true, facing, action };
+      pluginLog(`[pet-move] 「${last.text}」→ ${dir}：转向 ${facing}，让她回话带 [动作:${action}]（dsh-pet 自己走）`);
+      return { dir, action, facing, tone };
+    } catch (error) {
+      last = { ...last, ok: false, error: `petmove.failed: ${String(error?.message ?? error).slice(0, 120)}` };
+      pluginLog('[pet-move] 判断失败：', String(error?.message ?? error).slice(0, 120));
+      return none;
+    }
   }
 
+  /** 兼容旧调用：只判断 + 转身 + 语气（不再自己走）。 */
+  function onUserMessage(text, petId = 'main') { void decide(text, petId); }
+
   function status() { return { ok: true, config: cfg(), last }; }
-  return { onUserMessage, classify, move, status };
+  return { decide, onUserMessage, classify, move, status };
 }
