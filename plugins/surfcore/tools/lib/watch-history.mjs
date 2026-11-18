@@ -58,7 +58,7 @@ export function normalizeWatchEntry(entry = {}) {
     if (Number.isFinite(t.getTime())) at = t.toISOString()
   }
   if (!at && dateText) {
-    const t = new Date(`${dateText}T12:00:00+08:00`)
+    const t = new Date(`${dateText}T12:00:00`)
     if (Number.isFinite(t.getTime())) { at = t.toISOString(); dateOnly = true }
   }
   const unknownDate = entry.unknownDate === true
@@ -156,7 +156,7 @@ function memoryEntries(memoryFile) {
         if (Number.isFinite(t.getTime())) at = t.toISOString()
       }
       if (!at && dateText) {
-        const t = new Date(`${dateText}T12:00:00+08:00`)
+        const t = new Date(`${dateText}T12:00:00`)
         if (Number.isFinite(t.getTime())) { at = t.toISOString(); dateOnly = true }
       }
       const unknownDate = !at

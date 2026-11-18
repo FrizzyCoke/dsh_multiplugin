@@ -25,6 +25,17 @@ export const ALIGN_FILE = path.join(STATE_DIR, 'alignments.json');
 export const CANDIDATE_FILE = path.join(STATE_DIR, 'align-candidates.json');
 export const EXT_STATE_FILE = path.join(STATE_DIR, 'extensions.json');
 export const PLUGIN_LOG = path.join(STATE_DIR, 'plugin.log');
+
+/**
+ * 本机当地时间 + 时区偏移的 ISO 串，如 2026-11-17T23:57:24.120-08:00（2026-11-18 用户：日志时间要和电脑时钟一致）。
+ * 仍是合法 ISO，new Date() 能解析；以前用 toISOString() 是 UTC，日志里的 07:57Z 其实是本地 23:57。
+ */
+export function localStamp(date = new Date()) {
+  const pad = (n, w = 2) => String(Math.abs(Math.trunc(n))).padStart(w, '0');
+  const off = -date.getTimezoneOffset();
+  const sign = off >= 0 ? '+' : '-';
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}${sign}${pad(off / 60)}:${pad(off % 60)}`;
+}
 export const BRIDGE_SUPERVISOR_LOG = path.join(STATE_DIR, 'bridge-supervisor.log');
 
 const ROOT_CANDIDATES = [

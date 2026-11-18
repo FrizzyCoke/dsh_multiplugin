@@ -13,6 +13,7 @@
  */
 
 import { normalizeWindow, parseClock, windowContains as sharedWindowContains } from './time-window.mjs'
+import { moodSkipShift, moodVideosFactor } from './mood.mjs'
 
 export const DEFAULT_MIN_GAP_MIN = 20
 
@@ -27,6 +28,22 @@ export function minToHHMM(min) {
   return `${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`
 }
 
+/**
+ * 每个窗口可选的「作息性格」（2026-11-18 用户：白天狂刷、夜里睡觉偶尔醒）：
+ *   skipChance 这个窗口里每一趟「不看」的概率（缺省用全局 night.skipChance）；
+ *   maxVideos  这个窗口里每一趟初筛几条（缺省用全局 night.maxVideos）；
+ *   quietSkip  true = 掷到「不看」就真睡着：不叫醒、不写日记、不私信（缺省 false = 轻醒写日记）。
+ */
+export function windowExtras(raw) {
+  const out = {}
+  const skip = Number(raw?.skipChance)
+  if (raw?.skipChance !== undefined && raw?.skipChance !== null && raw?.skipChance !== '' && Number.isFinite(skip)) out.skipChance = Math.max(0, Math.min(1, skip))
+  const videos = Number(raw?.maxVideos)
+  if (raw?.maxVideos !== undefined && raw?.maxVideos !== null && raw?.maxVideos !== '' && Number.isFinite(videos)) out.maxVideos = Math.max(1, Math.min(30, Math.round(videos)))
+  if (raw?.quietSkip === true) out.quietSkip = true
+  return out
+}
+
 /** 把配置窗口收敛成 [start,end) 分钟；end <= start 视为跨午夜，end += 1440。 */
 export function normalizeNightWindows(windows = []) {
   const list = Array.isArray(windows) && windows.length
@@ -34,6 +51,19 @@ export function normalizeNightWindows(windows = []) {
     : [{ start: '20:00', end: '24:00', wakes: 1 }]
   const out = []
   for (const raw of list) {
+    // whale-night.mjs 传进来的是已经换算成分钟的窗口（start:0,end:1440…）。parseClock 只认 "HH:MM"，
+    // 以前这些全被判非法 → 永远退回 20:00–24:00×1（用户设的全天 12 次从没生效，2026-11-18 查出）。
+    if (Number.isFinite(raw?.start) && Number.isFinite(raw?.end) && raw.end > raw.start) {
+      out.push({
+        start: raw.start,
+        end: raw.end,
+        wrap: raw.wrap ?? raw.end > 1440,
+        label: raw.label ?? `${minToHHMM(raw.start)}–${raw.end === 1440 ? '24:00' : minToHHMM(raw.end)}`,
+        wakes: Math.max(0, Math.min(12, Math.floor(Number(raw.wakes ?? 1) || 0))),
+        ...windowExtras(raw),
+      })
+      continue
+    }
     const normalized = normalizeWindow(raw)
     if (!normalized.ok) continue
     out.push({
@@ -42,6 +72,7 @@ export function normalizeNightWindows(windows = []) {
       wrap: normalized.wrap,
       label: raw?.label ?? normalized.label,
       wakes: normalized.wakes,
+      ...windowExtras(raw),
     })
   }
   if (!out.length) {
@@ -179,7 +210,8 @@ export function buildNightSchedule({
         }
       }
       if (at < now && now < w.end) at = now + 1
-      const skip = random() < Number(skipChance ?? 0.3)
+      const p = w.skipChance ?? Number(skipChance ?? 0.3)
+      const skip = random() < p
       slots.push({
         id: `s${id += 1}`,
         window: w.label,
@@ -192,6 +224,9 @@ export function buildNightSchedule({
         action: skip ? 'skip' : 'wake',
         status: 'pending',
         gapMin: gap,
+        skipChance: p,
+        ...(w.maxVideos ? { maxVideos: w.maxVideos } : {}),
+        ...(w.quietSkip ? { quietSkip: true } : {}),
       })
       lastAt = Math.max(lastAt, at)
     }
@@ -242,5 +277,103 @@ export function markScheduleSlot(schedule, id, status, nowMin = Date.now()) {
   slot.status = status
   if (status === 'fired' || status === 'skipped') slot.doneAt = nowMin
   if (status === 'missed') slot.missedAt = nowMin
+  return slot
+}
+
+// ── 精力 / 心情（2026-11-18 用户：像真人 —— 刷久了会累，累了更容易不刷、刷得少）─────────
+// 只按「今天真刷过的趟」算：一天从 start 开始，每真刷一趟扣 maxVideos×costPerVideo，两趟之间每小时回 recoverPerHour。
+// 轻醒 / 睡着 / 错过 都不扣。纯函数，方便单测。
+export const ENERGY_DEFAULTS = Object.freeze({ enabled: true, strength: 0.5, costPerVideo: 2.2, recoverPerHour: 10, start: 100 })
+
+export function normalizeEnergy(raw) {
+  const c = raw && typeof raw === 'object' ? raw : {}
+  const num = (v, d, lo, hi) => { const n = Number(v); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d }
+  return {
+    enabled: c.enabled !== false,
+    strength: num(c.strength, ENERGY_DEFAULTS.strength, 0, 1),
+    costPerVideo: num(c.costPerVideo, ENERGY_DEFAULTS.costPerVideo, 0, 10),
+    recoverPerHour: num(c.recoverPerHour, ENERGY_DEFAULTS.recoverPerHour, 0, 100),
+    start: num(c.start, ENERGY_DEFAULTS.start, 0, 100),
+  }
+}
+
+/** 到 nowMin 为止的精力（0~100）。 */
+export function energyAt(slots = [], nowMin = 0, opts = {}) {
+  const o = normalizeEnergy(opts)
+  let e = o.start
+  let t = 0
+  const done = (Array.isArray(slots) ? slots : [])
+    .filter((s) => s && s.status === 'fired' && s.action === 'wake')
+    .map((s) => ({ at: Number(s.doneAt ?? s.at), videos: Number(s.maxVideos) || 5 }))
+    .filter((s) => Number.isFinite(s.at) && s.at <= nowMin)
+    .sort((a, b) => a.at - b.at)
+  for (const s of done) {
+    e = Math.min(100, e + ((s.at - t) / 60) * o.recoverPerHour)
+    e = Math.max(0, e - s.videos * o.costPerVideo)
+    t = s.at
+  }
+  e = Math.min(100, e + ((nowMin - t) / 60) * o.recoverPerHour)
+  return Math.round(e)
+}
+
+export function moodOf(energy) {
+  const e = Number(energy)
+  if (e >= 75) return '来劲'
+  if (e >= 50) return '正常'
+  if (e >= 25) return '有点累'
+  return '累瘫'
+}
+
+/** 累了「额外」不刷的概率（叠在窗口本身的不看概率之外）：精力 ≥60 不加；越累越高，最多 strength。 */
+export function tiredSkipChance(energy, strength = ENERGY_DEFAULTS.strength) {
+  const e = Number(energy)
+  if (!Number.isFinite(e) || e >= 60) return 0
+  return Math.min(0.95, ((60 - e) / 60) * Math.max(0, Math.min(1, Number(strength) || 0)))
+}
+
+/** 累了少刷几条：精力 ≥50 照原数；更低按比例减，最少 3 条。 */
+export function tiredVideos(videos, energy) {
+  const v = Math.max(1, Math.round(Number(videos) || 5))
+  const e = Number(energy)
+  if (!Number.isFinite(e) || e >= 50) return v
+  return Math.max(Math.min(3, v), Math.round(v * (0.4 + (e / 50) * 0.6)))
+}
+
+/** 固定种子的 0~1 随机数：同一天同一趟只掷一次，重算计划结果不变。 */
+export function seededRandom(seed) {
+  let h = 2166136261
+  for (const ch of String(seed)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619) }
+  h ^= h >>> 13; h = Math.imul(h, 0x5bd1e995); h ^= h >>> 15
+  return (h >>> 0) / 4294967296
+}
+
+/**
+ * 轮到这一趟时按当下精力定一次（只定一次，写回 slot）：累了可能改成「不刷」（安静地不刷，不私信），或少刷几条。
+ * 返回被改写的 slot。
+ */
+export function applyEnergyToSlot(schedule, slot, { date = '', nowMin = 0, energy: energyCfg = {}, defaultVideos = 5, moodValue = 0 } = {}) {
+  if (!slot || slot.energyApplied) return slot
+  const o = normalizeEnergy(energyCfg)
+  const e = energyAt(schedule?.slots ?? [], Math.max(Number(slot.at) || 0, Number(nowMin) || 0), o)
+  const mv = Number(moodValue) || 0
+  slot.energy = e
+  slot.mood = moodOf(e)
+  slot.moodValue = mv
+  slot.energyApplied = true
+  if (slot.action !== 'wake') return slot
+  // 累（精力）+ 不爽（心情）都会让她更可能不刷；开心略少不刷。同一个种子，一趟只掷一次。
+  const tiredP = o.enabled ? tiredSkipChance(e, o.strength) : 0
+  const p = Math.max(0, Math.min(0.95, tiredP + (mv < 0 ? moodSkipShift(mv) : 0)))
+  if (p > 0 && seededRandom(`${date}|${slot.id}|tired`) < p) {
+    slot.action = 'skip'
+    slot.tired = tiredP > 0
+    slot.sulky = mv < 0
+    slot.quietSkip = true
+    return slot
+  }
+  let videos = slot.maxVideos ?? defaultVideos
+  if (o.enabled && e < 50) videos = tiredVideos(videos, e)
+  if (mv !== 0) videos = Math.max(1, Math.min(30, Math.round(videos * moodVideosFactor(mv))))
+  if (videos !== (slot.maxVideos ?? defaultVideos)) slot.maxVideos = videos
   return slot
 }

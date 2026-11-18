@@ -46,12 +46,27 @@ function jianyingCopies() {
   } catch { return [] }
 }
 
+// winget install Gyan.FFmpeg 装在这里；它只改用户 PATH，DSH 若沿用旧的 Explorer 环境就看不到（2026-11-18 实测）。
+function wingetCopies() {
+  if (process.platform !== 'win32') return []
+  const base = path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WinGet', 'Packages')
+  try {
+    return fs.readdirSync(base)
+      .filter((d) => /^Gyan\.FFmpeg/i.test(d))
+      .flatMap((d) => {
+        try { return fs.readdirSync(path.join(base, d)).map((v) => path.join(base, d, v, 'bin', EXE)) } catch { return [] }
+      })
+      .filter(exists)
+  } catch { return [] }
+}
+
 export function ffmpegPath() {
   const cands = [
     process.env.FFMPEG,
     onPath(),
     path.join(ROOT, 'bin', EXE),
     accountBili('bin', EXE),
+    ...wingetCopies(),
     ...jianyingCopies(),
   ]
   return cands.find(exists) ?? null

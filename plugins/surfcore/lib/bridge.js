@@ -11,7 +11,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import {
   BRIDGE_SUPERVISOR_LOG, QQBOT_ROOT, QQ_CONFIG, QQ_LOCK_FILE, QQ_STATE_DIR,
-  findNodeExe,
+  findNodeExe, localStamp,
 } from './paths.js';
 import { readJson } from './store.js';
 
@@ -161,7 +161,7 @@ export function mapStatusPayload(data = {}, { port = consolePort(), pid } = {}) 
 
 function appendSupervisorLog(text) {
   try {
-    const line = `[${new Date().toISOString()}] ${String(text).replace(/\s+$/, '')}\n`;
+    const line = `[${localStamp()}] ${String(text).replace(/\s+$/, '')}\n`;
     fs.mkdirSync(path.dirname(BRIDGE_SUPERVISOR_LOG), { recursive: true });
     fs.appendFileSync(BRIDGE_SUPERVISOR_LOG, line);
   } catch {}

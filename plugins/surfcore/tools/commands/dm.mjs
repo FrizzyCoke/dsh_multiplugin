@@ -21,6 +21,10 @@ import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
 import { assertInteractEnabled } from '../lib/interact.mjs'
 import { gate, record } from '../lib/quota-gate.mjs'
+import { normalizeLimits } from '../lib/limits.mjs'
+import { addPending, chatCapFor, decayedMood, moodLabel, readMood, writeMood } from '../lib/mood.mjs'
+import { effectiveMinScore } from '../lib/owner-taste.mjs'
+import { loadScores } from '../lib/scores.mjs'
 
 const argv = process.argv.slice(2)
 const opt = {}
@@ -204,6 +208,56 @@ if (TO && TO !== OWNER) {
 if (!OWNER) { console.error('✗ 配置里 owner.mid 为空 —— 私信只发给主人，没配就不发'); process.exit(2) }
 if (MSG.length > 300) { console.error(`✗ 私信太长（${MSG.length} > 300 字），退化成刷屏了 ✗`); process.exit(2) }
 
+// ⑤ 闲聊（--chat，2026-11-18 主人定「多在 B站 跟我聊」）：单独一本账，share.chatDaily 句/天（写死在代码里拦，
+//    在任何网络请求之前拦，连 --dry 也拦）。
+const CHAT = !!opt.chat
+const CHAT_DAILY = Math.max(0, Math.min(50, Math.floor(Number(config().share?.chatDaily ?? 0) || 0)))
+// 心情（2026-11-18）：不爽时主动闲聊更少（一半 / 两成），开心也不会超过 chatDaily；永远不因为不爽多发。
+const MOOD_FILE = biliState('mood.json')
+const MOOD_NOW = decayedMood(readMood(MOOD_FILE), Date.now(), config().mood ?? {})
+const CHAT_CAP = CHAT_DAILY === 0 ? 0 : chatCapFor(MOOD_NOW, CHAT_DAILY)
+// ⑥ 主人通道总上限（2026-11-18 用户定：自动私信我一天最多 10 条，分享/闲聊/报备都算）。
+const OWNER_CAP = normalizeLimits(config().limits).ownerDmDaily
+// --reply：回主人刚发来的私信，不占上限（上限只管她主动找他）。必须是主人 30 分钟内真发过消息（插件私信监听记的），
+//   否则拒 —— 防止把主动私信伪装成回复。
+const REPLY = !!opt.reply
+if (REPLY) {
+  if (CHAT || SHARE) { console.error('✗ [dm.reply-mixed] --reply 不能和 --chat / --share 一起用'); process.exit(2) }
+  let lastAt = 0
+  try { lastAt = new Date(JSON.parse(fs.readFileSync(biliState('owner-last-dm.json'), 'utf8')).at).getTime() } catch {}
+  if (!Number.isFinite(lastAt) || Date.now() - lastAt > 30 * 60 * 1000) {
+    console.error('✗ [dm.reply-no-recent] 主人 30 分钟内没给你发过私信 —— 这不是回复；主动找他就去掉 --reply（占每天上限）')
+    process.exit(4)
+  }
+}
+{
+  const q0 = loadQ()
+  const sentToday = q0.date === today() ? Number(q0.count ?? 0) - Number(q0.replyCountDate === today() ? q0.replyCount ?? 0 : 0) : 0
+  if (!REPLY && sentToday >= OWNER_CAP) {
+    console.error(`✗ [dm.owner-cap] 今天已经私信主人 ${sentToday}/${OWNER_CAP} 条了 —— 到上限了，剩下的写进日记、明天再说 ✗（上限在设置页「B站 → 额度」里调）`)
+    process.exit(4)
+  }
+}
+if (CHAT) {
+  const q0 = loadQ()
+  const usedChat = q0.chatDate === today() ? Number(q0.chatCount ?? 0) : 0
+  if (SHARE) { console.error('✗ [dm.chat-and-share] --chat 和 --share 不能同时用 —— 分享走 --share，闲聊走 --chat'); process.exit(2) }
+  if (CHAT_CAP === 0) { console.error('✗ [dm.chat-disabled] 闲聊私信没开（share.chatDaily=0）—— 主人在设置页「B站 → 分享」里调'); process.exit(4) }
+  if (usedChat >= CHAT_CAP) { console.error(`✗ [dm.chat-cap] 今天已经找他聊了 ${usedChat}/${CHAT_CAP} 句${CHAT_CAP < CHAT_DAILY ? `（心情 ${MOOD_NOW}：${moodLabel(MOOD_NOW)}，所以比平时 ${CHAT_DAILY} 句少）` : ''} —— 剩下的留到明天，别刷屏 ✗`); process.exit(4) }
+}
+// ⑦ 分享要真到线（2026-11-18）：以前私信分享在代码里不查分，只靠提示；现在查她给这条视频打的分，
+//    门槛跟着他对分享的反应走（owner-taste.mjs：回得多降、老不理升，最多 ±2）。
+const SHARE_BV = (String(SHARE_TARGET).match(/BV[0-9A-Za-z]{10}/) ?? [])[0] ?? ''
+if (SHARE) {
+  const base = Number(config().share?.minScore ?? 13)
+  const eff = effectiveMinScore(base, readMood(MOOD_FILE))
+  let best = null
+  for (const rows of Object.values(loadScores())) for (const r of Array.isArray(rows) ? rows : []) if (r?.bv === SHARE_BV && (best === null || Number(r.score) > best)) best = Number(r.score)
+  if (!SHARE_BV) { console.error('✗ [dm.share-no-video] 分享要带视频：--target BV号（或正文里有 BV 链接）'); process.exit(2) }
+  if (best === null) { console.error(`✗ [dm.share-unscored] ${SHARE_BV} 还没评分 —— 先 \`score ${SHARE_BV} --score N --reason "…"\` 再分享`); process.exit(4) }
+  if (best < eff.minScore) { console.error(`✗ [dm.share-score] 这条你打了 ${best} 分，现在的分享门槛是 ${eff.minScore}${eff.offset ? `（平时 ${base}，按他最近对分享的反应调过）` : ''} —— 不够格，别发`); process.exit(4) }
+}
+
 const meInfo = await me()
 if (String(meInfo.mid) === ONLY_TO) { console.error('✗ 不能给自己发私信'); process.exit(2) }
 
@@ -225,11 +279,12 @@ if (ONE_TARGET_PER_DAY && q.date === today() && q.mid && String(q.mid) !== ONLY_
 
 console.log(`[dm] ${meInfo.uname} → ${OWNER_NAME}（mid ${ONLY_TO}）`)
 console.log(`  正文 ${MSG.length} 字：${MSG.slice(0, 80)}${MSG.length > 80 ? '…' : ''}`)
-console.log(`  互关 ✓  ·  今天第 ${used + 1} 条（条数不限 ✓ 锁定给 ${OWNER_NAME} ✓）`)
+console.log(`  互关 ✓  ·  今天第 ${used + 1}/${OWNER_CAP} 条（锁定给 ${OWNER_NAME} ✓）`)
 
 if (DRY) { console.log('  [dry] 未发送 ✓ 确认后把 --dry 换成 --go'); process.exit(0) }
 if (!GO) { console.error('✗ 必须给 --dry 或 --go'); process.exit(2) }
 
+const chatUsed = CHAT && q.chatDate === today() ? Number(q.chatCount ?? 0) : 0
 // ④ 分享型先过闸（日上限 / 同一视频 7 天一次 / 评分卡 …由 quota 统一管 ✓）
 if (SHARE) {
   const ok = gate({ type: 'dm', target: SHARE_TARGET, auto: true, share: true })
@@ -240,9 +295,15 @@ if (r.code === 0) {
   // 2026-10-20 修：原先整体覆盖会把陌生人通道的 replied / replyDate / replyTotal 抹掉
   //   （每次发主人私信后，陌生人的「24 小时 1 条」「一天 5 条」就被清零 → 形同虚设 ✗）
   //   改为保留已有字段，只更新主人通道自己的计数 ✓
-  saveQ({ ...q, date: today(), count: used + 1, mid: ONLY_TO, at: new Date().toISOString() })
+  saveQ({
+    ...q, date: today(), count: used + 1, mid: ONLY_TO, at: new Date().toISOString(),
+    ...(CHAT ? { chatDate: today(), chatCount: chatUsed + 1 } : {}),
+    ...(REPLY ? { replyCountDate: today(), replyCount: (q.replyCountDate === today() ? Number(q.replyCount ?? 0) : 0) + 1 } : {}),
+  })
   if (SHARE) record({ type: 'dm', target: SHARE_TARGET, note: MSG.slice(0, 40), auto: true, share: true })
-  console.log(`  ✓ 已发送（HTTP ${r.http}）${SHARE ? ' · 已记入分享额度 ✓' : ' · 推送不占额度 ✓'}`)
+  // 她主动找他的（闲聊 / 分享）记下来等他回：回了心情 +1，几小时没回且他明明在线 -1（插件私信监听结算）。
+  if (CHAT || SHARE) { try { writeMood(MOOD_FILE, addPending(readMood(MOOD_FILE), { kind: CHAT ? 'chat' : 'share', target: SHARE ? SHARE_BV : '' })) } catch {} }
+  console.log(`  ✓ 已发送（HTTP ${r.http}）${SHARE ? ' · 已记入分享额度 ✓' : CHAT ? ` · 闲聊 ${chatUsed + 1}/${CHAT_CAP} ✓` : ' · 推送不占额度 ✓'}`)
   process.exit(0)
 }
 console.error(`  ✗ 发送失败：HTTP ${r.http} code=${r.code} ${r.message ?? ''}`)

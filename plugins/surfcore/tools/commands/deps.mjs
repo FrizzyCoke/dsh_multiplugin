@@ -47,6 +47,10 @@ items.push({
   ok: ff.ok,
   detail: ff.ok ? `${ff.version}\n  路径：${ff.path}` : (ff.path ? `找到了但跑不起来：${ff.version ?? ff.error}` : '没找到'),
   fix: '① winget install ffmpeg  ② 或设环境变量 FFMPEG=路径  ③ 或放进 <仓库>/bin/ 或 ~/.dsh/surfcore/bili/bin/',
+  // 2026-11-18：ffmpeg 只管「抽帧看画面」。缺了照样能刷、能评论、能私信（深读用 debrief --no-frames），
+  // 以前算必需项 → 体检一红她整趟只读不说话（用户实测：「体检还是红的 缺ffmpeg 这趟只读没对外发」）。
+  optional: true,
+  degraded: '不影响对外发言：深读先用 `debrief <BV> --no-frames`（字幕 + 弹幕热区 + 热评），装上后自动恢复抽帧',
 })
 
 // ③ Node 版本（要 18+ 才有稳定 fetch）
@@ -69,16 +73,20 @@ try {
 } catch {}
 items.push({ name: '数据目录可写', ok: dirOk, detail: biliStateDir(), fix: '检查该目录权限' })
 
-const bad = items.filter((i) => !i.ok)
+const bad = items.filter((i) => !i.ok && !i.optional)
+const weak = items.filter((i) => !i.ok && i.optional)
 
 if (asJson) {
-  console.log(JSON.stringify({ ok: bad.length === 0, node: process.versions.node, items }, null, 2))
+  console.log(JSON.stringify({ ok: bad.length === 0, degraded: weak.map((i) => i.name), node: process.versions.node, items }, null, 2))
 } else {
   console.log('== 依赖体检 ==')
   for (const i of items) {
-    console.log(`${i.ok ? '✓' : '✗'} ${i.name}  ${i.detail ? '— ' + i.detail : ''}`)
+    console.log(`${i.ok ? '✓' : i.optional ? '⚠' : '✗'} ${i.name}  ${i.detail ? '— ' + i.detail : ''}`)
     if (!i.ok) console.log(`    修：${i.fix}`)
+    if (!i.ok && i.degraded) console.log(`    现在：${i.degraded}`)
   }
-  console.log(bad.length ? `\n✗ ${bad.length} 项不可用 —— 先用上面的"修"处理，再重跑一次。` : '\n✓ 全部可用')
+  console.log(bad.length
+    ? `\n✗ ${bad.length} 项不可用 —— 先用上面的"修"处理，再重跑一次（这一趟只读、别对外发）。`
+    : weak.length ? `\n✓ 可以正常刷、正常说话（⚠ ${weak.length} 项是可选的，缺了只是少点功能，见上面「现在」）` : '\n✓ 全部可用')
 }
 process.exit(bad.length ? 3 : 0)

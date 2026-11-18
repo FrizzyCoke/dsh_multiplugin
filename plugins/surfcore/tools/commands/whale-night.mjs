@@ -29,9 +29,10 @@ import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import { config } from '../lib/config.mjs'
+import { decayedMood, readMood } from '../lib/mood.mjs'
 import { loadScores } from '../lib/scores.mjs'
 import {
-  buildNightSchedule, nextPendingSlot, markScheduleSlot, qualityByWindow, minToHHMM,
+  buildNightSchedule, nextPendingSlot, markScheduleSlot, qualityByWindow, minToHHMM, windowExtras, applyEnergyToSlot, energyAt,
 } from '../lib/night-schedule.mjs'
 
 const HOME = process.env.USERPROFILE || process.env.HOME || '.'
@@ -76,11 +77,15 @@ function windowsOf(c) {
         wrap: end > 1440,
         label: `${w.start}–${w.end}`,
         wakes: Math.max(0, Number(w.wakes ?? 1) || 0),
+        ...windowExtras(w),
       }
     })
     .filter((w) => w.end > w.start)
 }
-const WINDOWS = windowsOf(cfg)
+// 2026-11-18 用户定：周六、周日用 night.weekend.windows（开着且有窗口时）；排程时按本机日期判断。
+export function isWeekendDay(d = new Date()) { return d.getDay() === 0 || d.getDay() === 6 }
+const WEEKEND = isWeekendDay() && cfg.weekend?.enabled === true && Array.isArray(cfg.weekend?.windows) && cfg.weekend.windows.length > 0
+const WINDOWS = windowsOf(WEEKEND ? { ...cfg, windows: cfg.weekend.windows } : cfg)
 // 2026-10-23 用户选 C：每个窗口至少 1 次；全天总数 ≤ maxWakesPerDay（硬上限 12）。
 // 不再把“各窗口 wakes 之和”当上限——27 次需求和 12 次上限本身就冲突。
 const MAX_WAKES = Math.min(12, Math.max(0, Number(cfg.maxWakesPerDay ?? 12) || 12))
@@ -100,6 +105,11 @@ function donePlan(state, reason) {
 }
 
 function planFromSlot(state, slot) {
+  // 精力/心情：轮到这一趟时定一次（写回 slot，重算计划结果不变）；累了可能安静地不刷、或少刷几条。
+  // 心情也一起算（不爽更容易不刷、刷得少；开心多刷几条）—— 同一次掷骰，一趟只定一次。
+  let moodValue = 0
+  try { moodValue = decayedMood(readMood(biliState('mood.json')), Date.now(), config().mood ?? {}) } catch {}
+  applyEnergyToSlot(state, slot, { date: today(), nowMin: nowMin(), energy: cfg.energy, defaultVideos: cfg.maxVideos ?? 5, moodValue })
   const kind = slot.kind === 'base' ? '保底' : '加餐'
   return {
     ...state,
@@ -118,10 +128,17 @@ function planFromSlot(state, slot) {
     wakes: Number(state.wakes ?? 0) || 0,
     watchWakes: Number(state.watchWakes ?? 0) || 0,
     reason: slot.action === 'skip'
-      ? `这次不想看（掷骰子掷到了「不看」那 ${Math.round(Number(cfg.skipChance ?? 0.3) * 100)}%）`
+      ? (slot.tired || slot.sulky
+        ? `${slot.tired ? `累了（精力 ${slot.energy}/100）` : ''}${slot.tired && slot.sulky ? '、' : ''}${slot.sulky ? `心情不好（${slot.moodValue}）` : ''}，这趟不刷`
+        : `这次不想看（掷骰子掷到了「不看」那 ${Math.round(Number(slot.skipChance ?? cfg.skipChance ?? 0.3) * 100)}%）`)
       : '',
+    energy: slot.energy,
+    mood: slot.mood,
+    tired: slot.tired === true || slot.sulky === true,
+    moodValue: slot.moodValue ?? 0,
     roll: slot.action === 'wake' ? 'watch' : 'skip',
-    maxVideos: cfg.maxVideos ?? 5,
+    maxVideos: slot.maxVideos ?? cfg.maxVideos ?? 5,
+    quietSkip: slot.quietSkip === true,
     createdAt: new Date().toISOString(),
   }
 }
@@ -174,7 +191,14 @@ function logEvent(kind, note) {
   } catch {}
 }
 
-const winText = () => WINDOWS.map((w) => w.label).join(' · ')
+const winText = () => WINDOWS.map((w) => {
+  const extra = [
+    w.skipChance !== undefined ? `不看${Math.round(w.skipChance * 100)}%` : '',
+    w.maxVideos ? `${w.maxVideos}条` : '',
+    w.quietSkip ? '不看=睡着' : '',
+  ].filter(Boolean).join('/')
+  return `${w.label}×${w.wakes}${extra ? `(${extra})` : ''}`
+}).join(' · ')
 
 if (cmd === 'plan') {
   const p = makePlan()
@@ -199,11 +223,12 @@ if (cmd === 'status') {
   const count = (status) => slots.filter((s) => s.status === status).length
   const done = Number(p.wakes ?? 0) || 0
   const watched = Number(p.watchWakes ?? 0) || 0
-  console.log(`配置: 窗口 ${winText()} | 全天上限 ${MAX_WAKES} 次 | 最小间隔 ${MIN_GAP_MIN} 分钟 | 不看概率 ${Math.round(Number(cfg.skipChance ?? 0.3) * 100)}% | 一次初筛 ${cfg.maxVideos ?? 5} 条`)
+  console.log(`配置: ${WEEKEND ? '【周末作息】' : (cfg.weekend?.enabled ? '【平日作息】' : '')}窗口 ${winText()} | 全天上限 ${MAX_WAKES} 次 | 最小间隔 ${MIN_GAP_MIN} 分钟 | 不看概率 ${Math.round(Number(cfg.skipChance ?? 0.3) * 100)}% | 一次初筛 ${cfg.maxVideos ?? 5} 条`)
   console.log(`今天已醒: ${done}/${MAX_WAKES}（真正看 ${watched}）· slots ${slots.length}（待 ${count('pending')} · 已醒 ${count('fired')} · 轻醒 ${count('skipped')} · 错过 ${count('missed')}）`)
   if (Array.isArray(p.warnings) && p.warnings.length) console.log(`排程提醒: ${p.warnings.join('；')}`)
   if (slots.length) {
-    console.log('排程: ' + slots.map((s) => `${s.atText} ${s.window}·${s.kind === 'base' ? '保底' : '加餐'}·${s.status}·${s.action === 'skip' ? '轻醒' : '看'}`).join(' | '))
+    console.log('排程: ' + slots.map((s) => `${s.atText} ${s.window}·${s.kind === 'base' ? '保底' : '加餐'}·${s.status}·${s.action === 'skip' ? (s.tired ? '累了不刷' : s.quietSkip ? '睡着' : '轻醒') : '看'}${s.energy !== undefined ? '·精力' + s.energy : ''}`).join(' | '))
+  console.log('精力: 现在 ' + energyAt(slots, nowMin(), cfg.energy) + '/100' + (cfg.energy?.enabled === false ? '（精力模型关着）' : ''))
   }
   console.log(`当前的计划: ${p.date ?? '(无)'} → ${p.action ?? '(未生成)'}${p.atText ? ' @ ' + p.atText : ''}${p.window ? '（窗口 ' + p.window + (p.withinWindow ? ' · ' + p.withinWindow : '') + '）' : ''}${p.reason ? '（' + p.reason + '）' : ''}`)
   console.log(`兜底标记: ${m.date ?? '(无)'}${m.date && m.date !== today() ? `  ← 有 ${m.date} 的标记（那晚 DSH 可能关着）` : ''}`)
@@ -268,7 +293,7 @@ if (cmd === 'clock') {
   }
   save(STATE, woke)
   logEvent('night-wake', `生物钟叫醒（第 ${woke.wakes} 次 · 计划 ${p.atText}）`)
-  console.log(`WHALE_WAKE at=${p.atText} wake=${woke.wakes}/${MAX_WAKES} maxVideos=${cfg.maxVideos ?? 5}${p.withinWindow ? ` slot=${p.withinWindow}` : ''}`)
+  console.log(`WHALE_WAKE at=${p.atText} wake=${woke.wakes}/${MAX_WAKES} maxVideos=${p.maxVideos ?? cfg.maxVideos ?? 5}${p.withinWindow ? ` slot=${p.withinWindow}` : ''}`)
   process.exit(0)
 }
 

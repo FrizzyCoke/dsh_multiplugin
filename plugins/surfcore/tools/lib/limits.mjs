@@ -17,6 +17,8 @@ export const LIMIT_RULES = {
   perVideoMin:    { def: 60,  min: 0, max: 1440,  label: '同一视频冷却（分钟）' },
   perThreadMin:   { def: 1440, min: 0, max: 10080, label: '同一条评论冷却（分钟）' },
   globalMin:      { def: 2,   min: 0, max: 120,   label: '任意两条发言间隔（分钟）' },
+  // 2026-11-18 用户定：她自动私信主人（分享 + 闲聊 + 报备，所有走 dm.mjs 的）一天总共最多几条；代码硬拦。
+  ownerDmDaily:   { def: 10,  min: 1, max: 100,   label: '自动私信主人 / 天（总）' },
 }
 
 function clampInt(value, fallback, min, max) {
