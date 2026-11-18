@@ -107,7 +107,7 @@ if (result.notes.length) console.log(`  依据：${result.notes.join('；')}`)
 // 2026-11-18：视频内容影响心情 —— 很对胃口 +1、很烂 -1（限速在 lib/mood.mjs）。
 try {
   const minScore = Number(config().share?.minScore ?? 13)
-  const delta = score >= minScore + 3 ? 1 : (result.capped || result.dislikes.length || score <= 4) ? -1 : 0 // 沾了不爱看的也算刷到垃圾
+  const delta = score >= minScore + 1 ? 1 : (result.capped || result.dislikes.length || score <= 4) ? -1 : 0 // 沾了不爱看的也算刷到垃圾
   if (delta) {
     const file = biliState('mood.json')
     const r = applyMood(readMood(file), delta, { why: `${delta > 0 ? '刷到好的' : '刷到垃圾'}：${(String(opt.title ?? '') || up.title || bv).slice(0, 30)}`, kind: 'video', cfg: config().mood ?? {} })

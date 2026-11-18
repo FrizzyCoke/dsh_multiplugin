@@ -83,6 +83,7 @@ import { createAttachmentGc } from './attachment-gc.js';
 import { createHousekeeping } from './housekeeping.js';
 import { dueLines, readDates } from '../tools/lib/dates.mjs';
 import { createPetLife } from './pet-life.js';
+import { addPending, applyMood, normalizeMoodConfig, ownerReplied, readMood, writeMood } from '../tools/lib/mood.mjs';
 import { createScreenSource } from './screen-capture.js';
 import { createScreenWatch } from './screen-watch.js';
 import { createUpdatesService, resumePendingApply } from './updates.js';
@@ -309,13 +310,34 @@ export function apply(ctx) {
     onUserMessage: (text, options) => screenWatch.onUserMessage(text, options),
     extraSystem: () => screenWatch.dshPetHint(),
     // 「往左走」「过来」→ 她真的走过去（lib/pet-move.js；每条桌宠消息多一次很小的判断）。
-    onMoveIntent: (text, petId) => petMove.onUserMessage(text, petId),
+    onMoveIntent: (text, petId) => { petOwnerSpoke(); petMove.onUserMessage(text, petId); },
   });
+  // 心情（tools/lib/mood.mjs，B站 那份 mood.json 是唯一状态）：桌宠这边的对话也算进去（2026-11-18 用户）。
+  const biliMoodCfg = () => { try { return JSON.parse(fs.readFileSync(BILI_CONFIG, 'utf8')).mood ?? {}; } catch { return {}; } };
+  const moodFile = () => path.join(activePlatformStateDir(BILI_DIR), 'mood.json');
+  const moodUpdate = (fn) => { try { writeMood(moodFile(), fn(readMood(moodFile()), biliMoodCfg())); } catch (error) { pluginLog('[mood] 记不上：', String(error?.message ?? error).slice(0, 80)); } };
   const petMove = createPetMove({
     chat: petChat,
     readConfig: () => readUnified().config?.petMove,
     currentDshUrl: () => currentDshUrl(),
     pluginLog,
+    // 同一次小判断顺便看语气：逗她 / 夸她 → 开心，怪她 / 骂她 → 不爽（权重 mood.weights.pet）
+    toneEnabled: () => { const c = normalizeMoodConfig(biliMoodCfg()); return c.enabled && c.weights.pet > 0; },
+    onTone: (tone, delta, text) => moodUpdate((s, cfg) => {
+      const r = applyMood(s, delta, { why: `他在桌宠里说「${String(text).slice(0, 20)}」（${tone}）`, kind: 'pet', cfg });
+      if (r.applied) pluginLog(`[mood] 桌宠对话 ${tone} → 心情 ${r.applied > 0 ? '+' : ''}${r.applied}（现在 ${r.value}）`);
+      return r.state;
+    }),
+  });
+  // 他找桌宠说话 = 回了她之前主动发的（桌宠 / B站 都算）；她在桌宠上主动说的记下来等他回，老不回就有点不爽。
+  const petOwnerSpoke = () => moodUpdate((s, cfg) => ownerReplied(s, { cfg }).state);
+  petChat.addFrontend({
+    id: 'mood-watch',
+    online: () => false,
+    onProactive: () => {
+      if (!(petChat.online().online === true || petChat.frontendOnline() === true)) return;
+      moodUpdate((s) => addPending(s, { kind: 'pet' }));
+    },
   });
   const screenSource = createScreenSource({
     dshHome: DSH_HOME,
@@ -348,6 +370,7 @@ export function apply(ctx) {
   const petLife = createPetLife({
     readConfig: () => readUnified().config?.petLife,
     readNight: () => { try { return JSON.parse(fs.readFileSync(BILI_CONFIG, 'utf8')).night ?? {}; } catch { return {}; } },
+    readMoodCfg: () => biliMoodCfg(),
     biliDir: () => activePlatformStateDir(BILI_DIR),
     currentDshUrl: () => currentDshUrl(),
     lastChatAt: () => Math.max(Number(petChat.lastActivity().lastChatAt) || 0, Number(dshPetBridge.status().lastRecallAt) || 0),

@@ -18,22 +18,22 @@ const ctx = {
 const cfg = normalizeScoringConfig();
 
 console.log('score rubric');
-ok('满分 20：权重默认 6/4/2/2/3/3，14 分代码算', () => {
+ok('满分 20：权重默认 7/2/2/2/4/3（他的口味别太重），13 分代码算', () => {
   assert.deepEqual(cfg.weights, DEFAULT_WEIGHTS);
   assert.equal(Object.values(cfg.weights).reduce((a, b) => a + b, 0), 20);
 });
 ok('她的口味：勾的类别 × 权重（擦边权重 2 → 一项就满）', () => {
   const one = computeScore({ title: '普通视频' }, { fits: ['标题党'], funny: 0, hooked: 0 }, ctx, cfg);
   const heavy = computeScore({ title: '普通视频' }, { fits: ['擦边'], funny: 0, hooked: 0 }, ctx, cfg);
-  assert.equal(one.items.taste, 3); assert.equal(heavy.items.taste, 6);
+  assert.equal(one.items.taste, 3.5); assert.equal(heavy.items.taste, 7);
 });
 ok('只认配置里的类别（模型自己造的类不算）', () => {
   assert.deepEqual(pickLabels('标题党, 神作, 低质', ctx.like), { ok: ['标题党', '低质'], unknown: ['神作'] });
   assert.equal(computeScore({ title: 'x' }, { fits: ['神作'], funny: 0, hooked: 0 }, ctx, cfg).items.taste, 0);
 });
 ok('他会喜欢：分区对上他观看历史的口味（前 3 满分，其余 0.7）', () => {
-  assert.equal(computeScore({ title: 'x', tname: '网络游戏' }, { funny: 0, hooked: 0 }, ctx, cfg).items.him, 4);
-  assert.equal(computeScore({ title: 'x', tname: '影视杂谈' }, { funny: 0, hooked: 0 }, ctx, cfg).items.him, 2.8);
+  assert.equal(computeScore({ title: 'x', tname: '网络游戏' }, { funny: 0, hooked: 0 }, ctx, cfg).items.him, 2);
+  assert.equal(computeScore({ title: 'x', tname: '影视杂谈' }, { funny: 0, hooked: 0 }, ctx, cfg).items.him, 1.4);
   assert.equal(computeScore({ title: 'x', tname: '美食' }, { funny: 0, hooked: 0 }, ctx, cfg).items.him, 0);
 });
 ok('沾了不爱看的：封顶到分享线以下（字面出现也算）', () => {
@@ -51,10 +51,10 @@ ok('新鲜：近似重复才扣；今天逛的方向搜来的不扣', () => {
   assert.equal(computeScore({ title: '狼叔又在抓羊了 第三集', mid: '7', kw: '狼叔整活' }, { funny: 0, hooked: 0 }, { ...rec, exploreToday: ['狼叔整活'] }, cfg).items.fresh, 2);
   assert.ok(similarity('狼叔又在抓羊了', '狼叔又在抓羊了第二集') > 0.7);
 });
-ok('好笑 / 上头：0~4 → 各 3 分；越界夹住', () => {
+ok('好笑 0~4 → 4 分、上头 0~4 → 3 分；越界夹住', () => {
   const r = computeScore({ title: 'x' }, { funny: 4, hooked: 2 }, ctx, cfg);
-  assert.equal(r.items.funny, 3); assert.equal(r.items.hooked, 1.5);
-  assert.equal(computeScore({ title: 'x' }, { funny: 9, hooked: -3 }, ctx, cfg).items.funny, 3);
+  assert.equal(r.items.funny, 4); assert.equal(r.items.hooked, 1.5);
+  assert.equal(computeScore({ title: 'x' }, { funny: 9, hooked: -3 }, ctx, cfg).items.funny, 4);
 });
 ok('权重可调：总分按 20 归一', () => {
   const c = normalizeScoringConfig({ weights: { taste: 10, him: 0, memory: 0, fresh: 0, funny: 5, hooked: 5 } });
@@ -63,7 +63,7 @@ ok('权重可调：总分按 20 归一', () => {
 ok('提示里写清只能从哪几类选、锚点是什么、搬运/低质不扣分', () => {
   const text = rubricPromptLines({}, ctx.like, ctx.dislike).join('\n');
   assert.match(text, /擦边、带货、标题党/); assert.match(text, /笑到想立刻发给他/); assert.match(text, /搬运、低质本来就是你爱看的，不扣分/);
-  assert.match(text, /14 分由代码/);
+  assert.match(text, /13 分由代码/);
 });
 
 console.log('commands (temp DSH_HOME, offline)');
@@ -88,10 +88,10 @@ ok('缺好笑/上头 或 理由 → 拒', () => {
 });
 ok('新写法：代码算总分，分项存进 scores.json；不认识的类别提示没算', () => {
   const r = cli('score', 'BV1aaaaaaaa1', '--fits', '擦边,神作', '--funny', '3', '--hooked', '3', '--reason', '擦边但做得挺上头', '--title', '某擦边视频');
-  assert.equal(r.status, 0, r.stderr); assert.match(r.stderr, /「神作」不在/); assert.match(r.stdout, /分项：口味 6/);
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stderr, /「神作」不在/); assert.match(r.stdout, /分项：口味 7/);
   const sc = JSON.parse(fs.readFileSync(state('scores.json'), 'utf8'));
   const row = Object.values(sc).flat().find((x) => x.bv === 'BV1aaaaaaaa1');
-  assert.ok(row.items && row.items.taste === 6); assert.deepEqual(row.fits, ['擦边']); assert.ok(row.score >= 11);
+  assert.ok(row.items && row.items.taste === 7); assert.deepEqual(row.fits, ['擦边']); assert.ok(row.score >= 11);
 });
 ok('分享不信传进来的分：share-dynamic 没评分 → share.unscored', () => {
   const r = spawnSync(process.execPath, [path.join(tools, 'bili.mjs'), 'share-dynamic', '--bvid', 'BV1zzzzzzzz1', '--text', '给大家推一条', '--reason', '很好笑很好笑', '--score', '20', '--dry'], { env, encoding: 'utf8', timeout: 20000 });

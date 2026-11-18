@@ -21,19 +21,19 @@ const cmd = argv[0] && !argv[0].startsWith('--') ? argv[0] : 'status'
 if (cmd === 'note') {
   const delta = Number(opt.delta)
   const why = String(opt.why ?? '').trim()
-  if (!Number.isFinite(delta) || delta === 0) { console.error('✗ [mood.bad-delta] --delta 要给 ±1 或 ±2'); process.exit(2) }
+  if (!Number.isFinite(delta) || delta === 0) { console.error('✗ [mood.bad-delta] --delta 要给 ±1~±3'); process.exit(2) }
   if (!why) { console.error('✗ [mood.no-why] --why 写一句为什么（他说了啥 / 看到了啥）'); process.exit(2) }
   const kind = ['dm', 'video', 'manual'].includes(String(opt.kind)) ? String(opt.kind) : 'dm'
   const r = applyMood(readMood(FILE), delta, { why, kind, cfg })
   writeMood(FILE, r.state)
-  const g = moodGuidance(r.value)
-  console.log(`✓ 心情 ${r.applied >= 0 ? '+' : ''}${r.applied}${r.applied !== Math.max(-2, Math.min(2, delta)) ? '（被限速/上限夹了）' : ''} → ${r.value}（${g.label}）`)
+  const g = moodGuidance(r.value, cfg)
+  console.log(`✓ 心情 ${r.applied >= 0 ? '+' : ''}${r.applied}${r.applied !== delta ? '（被限速/上限夹了）' : ''} → ${r.value}（${g.label}）`)
   process.exit(0)
 }
 
 const st = readMood(FILE)
 const v = decayedMood(st, Date.now(), cfg)
-const g = moodGuidance(v)
+const g = moodGuidance(v, cfg)
 console.log(`心情：${v}（${g.label}）—— ${g.how}`)
 for (const e of (st.events ?? []).slice(-6).reverse()) console.log(`  ${e.at.slice(5, 16).replace('T', ' ')}  ${e.applied >= 0 ? '+' : ''}${e.applied}  [${e.kind}] ${e.why}`)
 const open = (st.pending ?? []).filter((p) => !p.answered && !p.expired).length

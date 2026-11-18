@@ -30,12 +30,20 @@ export function targetX(x, dir) {
   return Math.round(Math.min(0.95, Math.max(0.05, t ?? cur)) * 1000) / 1000;
 }
 
+// 2026-11-18：同一次判断顺便看他这句的语气（影响她的心情），不多调一次模型。
+export const TONES = { funny: 2, warm: 1, neutral: 0, blame: -1, rude: -2 };
+export function parseTone(text) {
+  const words = String(text ?? '').toLowerCase().match(/[a-z]+/g) ?? [];
+  return words.find((w) => w in TONES) ?? 'neutral';
+}
 export const MOVE_CLASSIFIER = [
-  '你在判断一句话：他是不是在让桌面宠物（屏幕上的小人）挪位置。只输出一个词：',
-  'left（往左/去左边）· right（往右/去右边）· center（过来/到中间/回来）· leftedge（去最左边/靠左边站）· rightedge（去最右边）· otherside（往那边走 / 走开点 / 别挡着 —— 让它挪但没说方向）· none（不是让它挪位置，包括只是聊天、问左右的事）。',
+  '你在判断他对桌面宠物（屏幕上的小人）说的一句话。只输出两个英文词，空格隔开：',
+  '第一个：要不要它挪位置 —— left（往左/去左边）· right（往右/去右边）· center（过来/到中间/回来）· leftedge（去最左边/靠左边站）· rightedge（去最右边）· otherside（往那边走 / 走开点 / 别挡着 —— 让它挪但没说方向）· none（不是让它挪位置，包括只是聊天、问左右的事）。',
+  '第二个：他这句的语气 —— funny（逗她 / 玩梗 / 好笑）· warm（夸她 / 关心 / 亲近）· neutral（普通聊天、问事）· blame（怪她 / 嫌弃 / 说她不好）· rude（骂她 / 很冲 / 羞辱）。',
+  '例：「往左走」→ left neutral；「你真笨」→ none blame；「哈哈哈你太逗了」→ none funny。',
 ].join('\n');
 
-export function createPetMove({ chat, readConfig, currentDshUrl, pluginLog = () => {}, fetchImpl = (...a) => fetch(...a), leadMs = WALK_LEAD_MS } = {}) {
+export function createPetMove({ chat, readConfig, currentDshUrl, pluginLog = () => {}, fetchImpl = (...a) => fetch(...a), leadMs = WALK_LEAD_MS, onTone = null, toneEnabled = () => false } = {}) {
   const cfg = () => { try { return normalizePetMoveConfig(readConfig()); } catch { return normalizePetMoveConfig({}); } };
   let last = { at: 0, text: '', dir: null, ok: null, error: '' };
   const base = () => String(currentDshUrl() || '').replace(/\/+$/, '');
@@ -43,7 +51,8 @@ export function createPetMove({ chat, readConfig, currentDshUrl, pluginLog = () 
   async function classify(text) {
     const reply = await chat.complete({ system: MOVE_CLASSIFIER, user: `他说：「${String(text).slice(0, 200)}」`, effort: 'off', maxTokens: 64, temperature: 0 });
     chat.recordUsage?.(reply.usage, reply.model);
-    return parseDirection(reply.text);
+    const words = String(reply.text ?? '').trim().split(/\s+/);
+    return { dir: parseDirection(words[0]), tone: parseTone(words.slice(1).join(' ')) };
   }
 
   async function move(petId, dir) {
@@ -77,11 +86,16 @@ export function createPetMove({ chat, readConfig, currentDshUrl, pluginLog = () 
 
   /** 联动 recall 里调：不阻塞她回话（判断 + 走路在后台）。 */
   function onUserMessage(text, petId = 'main') {
-    if (!cfg().enabled || !String(text ?? '').trim()) return;
+    const moveOn = cfg().enabled;
+    let toneOn = false;
+    try { toneOn = toneEnabled() === true; } catch {}
+    if ((!moveOn && !toneOn) || !String(text ?? '').trim()) return;
     void (async () => {
       try {
-        const dir = await classify(text);
-        last = { at: Date.now(), text: String(text).slice(0, 40), dir, ok: null, error: '' };
+        const { dir: rawDir, tone } = await classify(text);
+        const dir = moveOn ? rawDir : null;
+        last = { at: Date.now(), text: String(text).slice(0, 40), dir, tone, ok: null, error: '' };
+        if (toneOn && tone !== 'neutral') { try { onTone?.(tone, TONES[tone], text); } catch {} }
         if (!dir) return;
         const r = await move(petId, dir);
         last = { ...last, ok: r.ok, error: r.ok ? '' : `${r.code}: ${r.error}` };

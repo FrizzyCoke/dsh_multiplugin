@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { normalizeWindow, windowContains } from '../tools/lib/time-window.mjs';
-import { decayedMood } from '../tools/lib/mood.mjs';
+import { decayedMood, normalizeMoodConfig } from '../tools/lib/mood.mjs';
 
 export const HAPPY_ANIMS = ['优雅女仆舞', '轻快摇摆舞', '可爱宅舞', '鲸鱼吐泡泡特效', '凭空生花', '蝴蝶蜜蜂环绕头顶开花', '超大伸懒腰'];
 export const SULKY_ANIMS = ['哈欠连天', '打瞌睡被惊醒', '工作状态-垂头叹气冒汗', '东张西望'];
@@ -54,9 +54,10 @@ export function scrollingNow(whaleNight = {}, now = Date.now()) {
 }
 
 /** 心情 → 要不要播、播哪个（≥5 开心、≤-4 不爽，中间不播；dsh-pet 自己的待机动作照常）。 */
-export function moodAnim(value, random = Math.random) {
+export function moodAnim(value, random = Math.random, bands = { happy: 3, upset: -1 }) {
   const v = Number(value) || 0;
-  const pool = v >= 5 ? HAPPY_ANIMS : v <= -4 ? SULKY_ANIMS : null;
+  // 2026-11-18：门槛放低（用户：心情更灵活）—— 到「很开心」就跳、比「平常」低一点就耷拉，跟 mood.bands 走
+  const pool = v >= (bands.happy ?? 3) ? HAPPY_ANIMS : v <= (bands.upset ?? -1) - 1 ? SULKY_ANIMS : null;
   return pool ? pool[Math.floor(random() * pool.length) % pool.length] : null;
 }
 
@@ -72,6 +73,7 @@ export function newBiliEvents(quota = {}, since = 0) {
 export function createPetLife({
   readConfig,
   readNight = () => ({}),
+  readMoodCfg = () => ({}),
   biliDir,
   currentDshUrl,
   lastChatAt = () => 0,
@@ -140,8 +142,9 @@ export function createPetLife({
       if (c.moodAnims && !talkedRecently && t - state.lastMoodAnimAt >= state.nextMoodGapMs) {
         state.lastMoodAnimAt = t;
         state.nextMoodGapMs = (25 + Math.floor(random() * 21)) * 60_000;
-        const value = decayedMood(readJson(path.join(dir(), 'mood.json'), {}), t);
-        const name = moodAnim(value, random);
+        const mc = normalizeMoodConfig(readMoodCfg() ?? {});
+        const value = decayedMood(readJson(path.join(dir(), 'mood.json'), {}), t, mc);
+        const name = moodAnim(value, random, mc.bands);
         if (name) { await call(`/anim?${q}`, { name }); state.last = `mood:${name}`; }
       }
     } catch (error) {

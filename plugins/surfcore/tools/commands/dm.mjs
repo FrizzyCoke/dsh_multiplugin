@@ -215,7 +215,7 @@ const CHAT_DAILY = Math.max(0, Math.min(50, Math.floor(Number(config().share?.ch
 // 心情（2026-11-18）：不爽时主动闲聊更少（一半 / 两成），开心也不会超过 chatDaily；永远不因为不爽多发。
 const MOOD_FILE = biliState('mood.json')
 const MOOD_NOW = decayedMood(readMood(MOOD_FILE), Date.now(), config().mood ?? {})
-const CHAT_CAP = CHAT_DAILY === 0 ? 0 : chatCapFor(MOOD_NOW, CHAT_DAILY)
+const CHAT_CAP = CHAT_DAILY === 0 ? 0 : chatCapFor(MOOD_NOW, CHAT_DAILY, config().mood ?? {})
 // ⑥ 主人通道总上限（2026-11-18 用户定：自动私信我一天最多 10 条，分享/闲聊/报备都算）。
 const OWNER_CAP = normalizeLimits(config().limits).ownerDmDaily
 // --reply：回主人刚发来的私信，不占上限（上限只管她主动找他）。必须是主人 30 分钟内真发过消息（插件私信监听记的），
@@ -243,7 +243,7 @@ if (CHAT) {
   const usedChat = q0.chatDate === today() ? Number(q0.chatCount ?? 0) : 0
   if (SHARE) { console.error('✗ [dm.chat-and-share] --chat 和 --share 不能同时用 —— 分享走 --share，闲聊走 --chat'); process.exit(2) }
   if (CHAT_CAP === 0) { console.error('✗ [dm.chat-disabled] 闲聊私信没开（share.chatDaily=0）—— 主人在设置页「B站 → 分享」里调'); process.exit(4) }
-  if (usedChat >= CHAT_CAP) { console.error(`✗ [dm.chat-cap] 今天已经找他聊了 ${usedChat}/${CHAT_CAP} 句${CHAT_CAP < CHAT_DAILY ? `（心情 ${MOOD_NOW}：${moodLabel(MOOD_NOW)}，所以比平时 ${CHAT_DAILY} 句少）` : ''} —— 剩下的留到明天，别刷屏 ✗`); process.exit(4) }
+  if (usedChat >= CHAT_CAP) { console.error(`✗ [dm.chat-cap] 今天已经找他聊了 ${usedChat}/${CHAT_CAP} 句${CHAT_CAP < CHAT_DAILY ? `（心情 ${MOOD_NOW}：${moodLabel(MOOD_NOW, config().mood ?? {})}，所以比平时 ${CHAT_DAILY} 句少）` : ''} —— 剩下的留到明天，别刷屏 ✗`); process.exit(4) }
 }
 // ⑦ 分享要真到线（2026-11-18）：以前私信分享在代码里不查分，只靠提示；现在查她给这条视频打的分，
 //    门槛跟着他对分享的反应走（owner-taste.mjs：回得多降、老不理升，最多 ±2）。

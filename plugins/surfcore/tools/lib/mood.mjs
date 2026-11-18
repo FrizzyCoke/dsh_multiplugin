@@ -17,7 +17,14 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-export const MOOD_DEFAULTS = Object.freeze({ enabled: true, halfLifeHours: 4, maxPerHour: 4, maxStep: 2, ignoreAfterHours: 3, ignorePenaltyDaily: 3 })
+// 2026-11-18 用户：心情要更灵活、门槛低一点；每个来源能单独调权重（都在 bili.config.json 的 mood 里）。
+export const MOOD_DEFAULTS = Object.freeze({
+  enabled: true, halfLifeHours: 4, maxPerHour: 6, maxStep: 3, ignoreAfterHours: 2, ignorePenaltyDaily: 4,
+  // 分档：≥happy 很开心 · ≥good 心情不错 · >upset 平常 · >sulky 有点不爽 · 其余 闷闷不乐
+  bands: Object.freeze({ happy: 3, good: 1, upset: -1, sulky: -3 }),
+  // 各来源的权重（乘在变化量上；0 = 这个来源不影响心情）
+  weights: Object.freeze({ video: 1, dm: 1, pet: 1, reply: 1, ignored: 1, manual: 1 }),
+})
 const CLAMP = 10
 
 export function normalizeMoodConfig(raw) {
@@ -30,6 +37,8 @@ export function normalizeMoodConfig(raw) {
     maxStep: num(c.maxStep, MOOD_DEFAULTS.maxStep, 1, 5),
     ignoreAfterHours: num(c.ignoreAfterHours, MOOD_DEFAULTS.ignoreAfterHours, 0.5, 24),
     ignorePenaltyDaily: num(c.ignorePenaltyDaily, MOOD_DEFAULTS.ignorePenaltyDaily, 0, 10),
+    bands: Object.fromEntries(Object.entries(MOOD_DEFAULTS.bands).map(([k, d]) => [k, num(c.bands?.[k], d, -10, 10)])),
+    weights: Object.fromEntries(Object.entries(MOOD_DEFAULTS.weights).map(([k, d]) => [k, num(c.weights?.[k], d, 0, 3)])),
   }
 }
 
@@ -52,7 +61,8 @@ export function applyMood(state = {}, delta, { now = Date.now(), why = '', kind 
   const c = normalizeMoodConfig(cfg)
   const events = Array.isArray(state?.events) ? state.events : []
   if (!c.enabled) return { state: { ...state }, applied: 0, value: decayedMood(state, now, c) }
-  let d = Math.max(-c.maxStep, Math.min(c.maxStep, Number(delta) || 0))
+  const w = c.weights[kind] ?? 1
+  let d = Math.max(-c.maxStep, Math.min(c.maxStep, (Number(delta) || 0) * w))
   // 一小时内累计变化（绝对值）最多 maxPerHour
   const hourAgo = now - 3_600_000
   const used = events.filter((e) => new Date(e.at).getTime() >= hourAgo).reduce((s, e) => s + Math.abs(Number(e.applied) || 0), 0)
@@ -65,12 +75,13 @@ export function applyMood(state = {}, delta, { now = Date.now(), why = '', kind 
   return { state: { ...state, value, at: new Date(now).toISOString(), events: [...events, event].slice(-60) }, applied, value }
 }
 
-export function moodLabel(v) {
+export function moodLabel(v, cfg = {}) {
+  const b = normalizeMoodConfig(cfg).bands
   const n = Number(v) || 0
-  if (n >= 5) return '很开心'
-  if (n >= 2) return '心情不错'
-  if (n > -2) return '平常'
-  if (n > -5) return '有点不爽'
+  if (n >= b.happy) return '很开心'
+  if (n >= b.good) return '心情不错'
+  if (n > b.upset) return '平常'
+  if (n > b.sulky) return '有点不爽'
   return '闷闷不乐'
 }
 
@@ -86,18 +97,19 @@ export function moodVideosFactor(v) {
 }
 
 /** 有效闲聊上限：只会往少里调（不爽 → 一半 / 两成），永远不超过 chatDaily。 */
-export function chatCapFor(v, chatDaily) {
+export function chatCapFor(v, chatDaily, cfg = {}) {
+  const b = normalizeMoodConfig(cfg).bands
   const cap = Math.max(0, Math.floor(Number(chatDaily) || 0))
   const n = Number(v) || 0
   if (cap === 0) return 0
-  if (n <= -5) return Math.max(1, Math.ceil(cap * 0.2))
-  if (n <= -2) return Math.max(1, Math.ceil(cap * 0.5))
+  if (n <= b.sulky) return Math.max(1, Math.ceil(cap * 0.2))
+  if (n <= b.upset) return Math.max(1, Math.ceil(cap * 0.5))
   return cap
 }
 
 /** 给提示用的一句：怎么刷、怎么说（并叮嘱别说出来、不许抱怨没人理）。 */
-export function moodGuidance(v) {
-  const label = moodLabel(v)
+export function moodGuidance(v, cfg = {}) {
+  const label = moodLabel(v, cfg)
   const how = {
     很开心: '心情很好：多刷几条，看到好笑的就想找他分享，说话带劲',
     心情不错: '心情不错：照常刷，话可以多一点',

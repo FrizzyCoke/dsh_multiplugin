@@ -314,7 +314,7 @@ export function moodLines(st, moodValue = currentMood()) {
   const lines = []
   const mv = Number(moodValue) || 0
   if (mv !== 0) {
-    const g = moodGuidance(mv)
+    const g = moodGuidance(mv, config().mood ?? {})
     lines.push(`【你现在的心情】${mv}（${g.label}）—— ${g.how}。别说出来；不爽也不许去找他抱怨。刷到好的 / 烂的会影响你心情（score 时自动记）。`)
   }
   const e = Number(st?.energy)
@@ -382,8 +382,8 @@ export async function newWatchTogether(text, { file = path.join(platformDir(), '
 }
 
 /** 主人私信时多给她的一段：现在的心情、判断他这句、一起看他发的视频、你们的梗。 */
-export function ownerDmLines({ moodValue = 0, bvids = [], minScore = 13 } = {}) {
-  const g = moodGuidance(moodValue)
+export function ownerDmLines({ moodValue = 0, bvids = [], minScore = 13, moodCfg = {} } = {}) {
+  const g = moodGuidance(moodValue, moodCfg)
   return [
     `【你现在的心情】${moodValue}（${g.label}）—— ${g.how}。心情只体现在你怎么说话，**别说出来**；不爽也**不许**抱怨"你怎么不理我"、追问为什么不回。`,
     '【先感觉一下他这句】真把你逗笑了 / 暖到你 → `mood note --delta 1`（特别好笑 2）`--why "他说的啥"`；冲你 / 敷衍你 → `--delta -1`；普通的话不用记。',
@@ -553,7 +553,7 @@ export function wakePrompt(st, tools = '') {
       ? [
         `5.8) 💬 **找我唠两句**（2026-11-18 主人定：多在 B站 私信跟他聊）：这一趟刷到好笑的、想吐槽的、想起他的 → 直接私信我一句，像兄弟随口说话，`,
         '     不用每条都带视频；**不带 --share**：`dm --msg "…" --chat --go`。没话就别硬聊 ✗',
-        `     ⚠️ 代码硬上限：闲聊今天 ${chatCapFor(currentMood(), B.share.chatDaily)} 句${chatCapFor(currentMood(), B.share.chatDaily) < B.share.chatDaily ? `（心情不好，比平时 ${B.share.chatDaily} 句少）` : ''}；**你主动私信我的（分享 + 闲聊）加起来一天 ${L.ownerDmDaily} 条**，回我的话不算 —— 到了会被拒`,
+        `     ⚠️ 代码硬上限：闲聊今天 ${chatCapFor(currentMood(), B.share.chatDaily, B.mood ?? {})} 句${chatCapFor(currentMood(), B.share.chatDaily, B.mood ?? {}) < B.share.chatDaily ? `（心情不好，比平时 ${B.share.chatDaily} 句少）` : ''}；**你主动私信我的（分享 + 闲聊）加起来一天 ${L.ownerDmDaily} 条**，回我的话不算 —— 到了会被拒`,
         '     心情好就多找他；不爽就少找，**绝不**去问"你怎么不回我"。想起你们之间的梗可以用一个（`joke list` / `joke use --id N`）。',
       ]
       : []),
@@ -1112,7 +1112,7 @@ export function startScheduler(ctx, opts) {
           } catch {}
           let bvids = []
           try { bvids = await newWatchTogether(ownerItems.map((it) => it.text).join(' ')) } catch {}
-          ownerExtra = ownerDmLines({ moodValue, bvids, minScore: Number(cfg.share?.minScore ?? 13) })
+          ownerExtra = ownerDmLines({ moodValue, bvids, minScore: Number(cfg.share?.minScore ?? 13), moodCfg: cfg.mood ?? {} })
         }
         const block = items.slice(0, 5).map((it) => {
           const mine = String(it.mid) === ownerMid

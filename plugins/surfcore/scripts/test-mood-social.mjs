@@ -26,24 +26,31 @@ await ok('回落：4 小时消一半；夹在 ±10', () => {
   for (let i = 0; i < 20; i += 1) s = applyMood(s, 2, { now: T0 + i * H, kind: 'dm' }).state;
   assert.ok(s.value <= 10);
 });
-await ok('一次最多 ±2、一小时累计最多 ±4（刷屏打不到底）', () => {
+await ok('一次最多 ±3、一小时累计最多 ±6（更灵活，但刷屏照样打不到底）', () => {
   let r = applyMood({}, 5, { now: T0, kind: 'dm' });
-  assert.equal(r.applied, 2);
-  r = applyMood(r.state, 2, { now: T0 + 1000, kind: 'dm' });
-  r = applyMood(r.state, -2, { now: T0 + 2000, kind: 'dm' });
-  assert.equal(r.applied, 0, '这一小时已经动了 4');
+  assert.equal(r.applied, 3);
+  r = applyMood(r.state, 3, { now: T0 + 1000, kind: 'dm' });
+  r = applyMood(r.state, -3, { now: T0 + 2000, kind: 'dm' });
+  assert.equal(r.applied, 0, '这一小时已经动了 6');
   r = applyMood(r.state, -2, { now: T0 + H + 5000, kind: 'dm' });
   assert.ok(r.applied < 0, '过了一小时又能动');
 });
-await ok('心情分档 + 对刷视频的影响方向对', () => {
-  assert.deepEqual([moodLabel(6), moodLabel(3), moodLabel(0), moodLabel(-3), moodLabel(-7)], ['很开心', '心情不错', '平常', '有点不爽', '闷闷不乐']);
+await ok('各来源权重：乘在变化量上；0 = 这个来源不影响心情', () => {
+  const cfg = { weights: { pet: 2, video: 0 } };
+  assert.equal(applyMood({}, 1, { now: T0, kind: 'pet', cfg }).applied, 2);
+  assert.equal(applyMood({}, -1, { now: T0, kind: 'video', cfg }).applied, 0);
+  assert.equal(applyMood({}, -1, { now: T0, kind: 'ignored', cfg }).applied, -1, '没写的来源按 1');
+});
+await ok('门槛放低：到 3 就很开心、-1 就有点不爽；分档可配', () => {
+  assert.deepEqual([moodLabel(4), moodLabel(1.5), moodLabel(0), moodLabel(-2), moodLabel(-5)], ['很开心', '心情不错', '平常', '有点不爽', '闷闷不乐']);
+  assert.equal(moodLabel(2, { bands: { happy: 2 } }), '很开心');
   assert.ok(moodSkipShift(-10) > 0 && moodSkipShift(10) < 0);
   assert.ok(moodVideosFactor(10) > 1 && moodVideosFactor(-10) < 1);
 });
 await ok('闲聊上限：不爽只会变少，开心也不超过设置的数', () => {
   assert.equal(chatCapFor(9, 6), 6);
   assert.equal(chatCapFor(0, 6), 6);
-  assert.equal(chatCapFor(-3, 6), 3);
+  assert.equal(chatCapFor(-2, 6), 3);
   assert.equal(chatCapFor(-8, 6), 2);
   assert.equal(chatCapFor(-8, 0), 0);
   for (let v = -10; v <= 10; v += 1) assert.ok(chatCapFor(v, 6) <= 6);
@@ -56,10 +63,10 @@ await ok('他回了她主动发的 → +1（只算一次）；没有等回的不
   assert.ok(r.state.pending.every((p) => p.answered));
   assert.equal(ownerReplied(r.state, { now: T0 + 2 * H }).applied, 0);
 });
-await ok('不理她：他今天在线却 3 小时没回 → -1；他不在 / 半夜发的不冤枉；一天最多扣 3', () => {
+await ok('不理她：他今天在线却 2 小时没回 → -1；他不在 / 半夜发的不冤枉；一天最多扣 4', () => {
   const around = { ownerLastAt: new Date(T0 - H).toISOString() };
   let s = addPending(around, { now: T0, kind: 'chat' });
-  assert.equal(checkIgnored(s, { now: T0 + 2 * H }).applied, 0, '还没到 3 小时');
+  assert.equal(checkIgnored(s, { now: T0 + 1.5 * H }).applied, 0, '还没到 2 小时');
   let r = checkIgnored(s, { now: T0 + 3.5 * H });
   assert.equal(r.applied, -1);
   assert.equal(checkIgnored(r.state, { now: T0 + 5 * H }).applied, 0, '同一条不重复扣');
@@ -70,7 +77,7 @@ await ok('不理她：他今天在线却 3 小时没回 → -1；他不在 / 半
   let many = { ownerLastAt: new Date(T0 - H).toISOString() };
   for (let i = 0; i < 6; i += 1) many = addPending(many, { now: T0 + i * 60_000, kind: 'chat' });
   r = checkIgnored(many, { now: T0 + 4 * H });
-  assert.equal(r.state.ignorePenalty, 3, '一天最多扣 3');
+  assert.equal(r.state.ignorePenalty, 4, '一天最多扣 4（ignorePenaltyDaily）');
 });
 await ok('心情进刷视频：不爽更容易不刷（安静不刷、标 sulky），开心多刷几条；一趟只定一次', () => {
   const slot = () => ({ id: 's1', status: 'pending', action: 'wake', at: 600, maxVideos: 12 });
@@ -97,12 +104,12 @@ const env = { ...process.env, DSH_HOME: home, SURFCORE_BILI_CONFIG: cfgFile };
 const cli = (...args) => spawnSync(process.execPath, [path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..', 'tools', 'bili.mjs'), ...args], { env, encoding: 'utf8', timeout: 20000 });
 const stateFile = (name) => spawnSync(process.execPath, ['--input-type=module', '-e', `import { biliState } from './tools/lib/state-paths.mjs'; process.stdout.write(biliState(${JSON.stringify(name)}))`], { env, encoding: 'utf8', cwd: new URL('..', import.meta.url) }).stdout;
 
-await ok('mood note：要给 delta 和理由；幅度被夹到 ±2', () => {
+await ok('mood note：要给 delta 和理由；幅度被夹到 ±3', () => {
   assert.match(cli('mood', 'note', '--delta', '0', '--why', 'x').stderr, /mood\.bad-delta/);
   assert.match(cli('mood', 'note', '--delta', '2').stderr, /mood\.no-why/);
   const r = cli('mood', 'note', '--delta', '5', '--why', '他发的梗笑死');
-  assert.equal(r.status, 0); assert.match(r.stdout, /\+2/);
-  assert.match(cli('mood').stdout, /心情：2/);
+  assert.equal(r.status, 0); assert.match(r.stdout, /\+3/);
+  assert.match(cli('mood').stdout, /心情：3/);
 });
 await ok('梗：必须有出处；dm 出处要他 48 小时内真私信过；一天只翻一个旧梗', () => {
   assert.match(cli('joke', 'add', '--text', '编的梗', '--source', 'xx').stderr, /joke\.no-source/);
@@ -138,7 +145,7 @@ await ok('他发的视频：BV 和 b23 短链都认，看过的不重复', async
   assert.deepEqual(await newWatchTogether('BV1xx411c7mD', { file, fetchImpl }), []);
 });
 await ok('主人私信提示：带心情、不许抱怨没人理、一起看的步骤、时间只用 debrief 给的', () => {
-  const text = ownerDmLines({ moodValue: -4, bvids: ['BV1xx411c7mD'] }).join('\n');
+  const text = ownerDmLines({ moodValue: -2, bvids: ['BV1xx411c7mD'] }).join('\n');
   assert.match(text, /有点不爽/); assert.match(text, /不许.*抱怨/);
   assert.match(text, /debrief BV1xx411c7mD --no-frames/); assert.match(text, /\?t=秒数/); assert.match(text, /没有时间就别编/);
   assert.match(text, /mood note/); assert.match(text, /joke/);
@@ -189,6 +196,33 @@ await ok('走过去：先朝那边播跑步动画、再走（不是凭空平移�
   posts.length = 0;
   const n = await mk({ ok: false, reason: 'pet-not-displayed', message: '没显示' }).move('main', 'left');
   assert.equal(n.ok, false); assert.equal(n.code, 'petmove.no-desktop'); assert.equal(posts.length, 0);
+});
+await ok('桌宠对话的语气：同一次判断给出「挪不挪 + 语气」，怪她 → 交给心情；不挪的照样算语气', async () => {
+  const { parseTone, TONES } = await import('../lib/pet-move.js');
+  assert.equal(parseTone('blame'), 'blame'); assert.equal(parseTone('??'), 'neutral');
+  assert.equal(TONES.funny, 2); assert.equal(TONES.rude, -2);
+  const tones = [];
+  let calls = 0;
+  const m = createPetMove({
+    chat: { complete: async () => { calls += 1; return { text: 'none blame' }; } },
+    readConfig: () => ({ enabled: true }), currentDshUrl: () => '',
+    toneEnabled: () => true, onTone: (tone, delta, text) => tones.push({ tone, delta, text }),
+  });
+  m.onUserMessage('你真笨');
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(calls, 1, '只调一次'); assert.deepEqual(tones, [{ tone: 'blame', delta: -1, text: '你真笨' }]);
+});
+await ok('挪位置关了、语气开着：照样判断语气，但不会走', async () => {
+  const tones = []; const fetched = [];
+  const m = createPetMove({
+    chat: { complete: async () => ({ text: 'left funny' }) },
+    readConfig: () => ({ enabled: false }), currentDshUrl: () => 'http://dsh',
+    fetchImpl: async (u) => { fetched.push(String(u)); return { json: async () => ({ ok: true }) }; },
+    toneEnabled: () => true, onTone: (tone) => tones.push(tone),
+  });
+  m.onUserMessage('往左走哈哈哈');
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(tones, ['funny']); assert.equal(fetched.length, 0);
 });
 await ok('关掉就不判断（不花 token）', async () => {
   let asked = 0;
