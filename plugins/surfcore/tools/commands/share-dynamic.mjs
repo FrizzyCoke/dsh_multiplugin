@@ -22,6 +22,9 @@ import { gate, record as recordQuota } from '../lib/quota-gate.mjs'
 import { assertOutboundIdentitySafe } from '../lib/outbound-guard.mjs'
 import { ownerOf, findVideoDynamic, createForward, verifyForward } from '../lib/forward.mjs'
 import { readShareState, dynamicGapWait, mergeShareRecord } from '../lib/share-dynamic.mjs'
+import { recordedScore } from '../lib/scores.mjs'
+import { effectiveMinScore } from '../lib/owner-taste.mjs'
+import { readMood } from '../lib/mood.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const argv = process.argv.slice(2)
@@ -36,14 +39,13 @@ for (let i = 0; i < argv.length; i += 1) {
 
 const bvid = String(args.get('bvid') ?? '').trim()
 const text = String(args.get('text') ?? '').trim()
-const score = Number(args.get('score'))
 const reason = String(args.get('reason') ?? '').trim()
 const dry = args.get('dry') === true
 const go = args.get('go') === true
 const allowText = args.get('allow-text') === true
 
 if (!/^BV[0-9A-Za-z]{10}$/.test(bvid)) {
-  console.error('用法: share-dynamic --bvid BV... --text "…" --score 0-20 --reason "…" [--allow-text] [--dry|--go]')
+  console.error('用法: share-dynamic --bvid BV... --text "…" --reason "…"（分数用 score 记过的） [--allow-text] [--dry|--go]')
   process.exit(2)
 }
 if (!text) { console.error('share-dynamic 需要 --text'); process.exit(2) }
@@ -57,13 +59,11 @@ if (cfg.share?.enabled === false) {
   console.error('分享已在设置里关闭（share.enabled=false）')
   process.exit(3)
 }
-const minScore = Number(cfg.share?.minScore ?? 13)
-if (!Number.isFinite(score) || String(args.get('score') ?? '') === '') {
-  console.error(`需要 --score（每项 0-4，满 20；阈值 ${minScore}）`)
-  process.exit(2)
-}
-if (score < 0 || score > 20) {
-  console.error('--score 必须在 0~20 之间')
+// 2026-11-18：分数以她记过的为准（标尺算的，lib/score-rubric.mjs），不信传进来的 --score；门槛跟着他的反应走。
+const minScore = effectiveMinScore(Number(cfg.share?.minScore ?? 13), readMood(biliState('mood.json'))).minScore
+const score = recordedScore(bvid)
+if (score === null) {
+  console.error(`✗ [share.unscored] ${bvid} 还没评分 —— 先 \`score ${bvid} --fits "…" --funny 0-4 --hooked 0-4 --reason "…"\``)
   process.exit(2)
 }
 if (score < minScore) {

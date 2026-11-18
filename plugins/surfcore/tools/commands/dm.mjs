@@ -254,7 +254,7 @@ if (SHARE) {
   let best = null
   for (const rows of Object.values(loadScores())) for (const r of Array.isArray(rows) ? rows : []) if (r?.bv === SHARE_BV && (best === null || Number(r.score) > best)) best = Number(r.score)
   if (!SHARE_BV) { console.error('✗ [dm.share-no-video] 分享要带视频：--target BV号（或正文里有 BV 链接）'); process.exit(2) }
-  if (best === null) { console.error(`✗ [dm.share-unscored] ${SHARE_BV} 还没评分 —— 先 \`score ${SHARE_BV} --score N --reason "…"\` 再分享`); process.exit(4) }
+  if (best === null) { console.error(`✗ [dm.share-unscored] ${SHARE_BV} 还没评分 —— 先 \`score ${SHARE_BV} --fits "…" --funny 0-4 --hooked 0-4 --reason "…"\` 再分享`); process.exit(4) }
   if (best < eff.minScore) { console.error(`✗ [dm.share-score] 这条你打了 ${best} 分，现在的分享门槛是 ${eff.minScore}${eff.offset ? `（平时 ${base}，按他最近对分享的反应调过）` : ''} —— 不够格，别发`); process.exit(4) }
 }
 

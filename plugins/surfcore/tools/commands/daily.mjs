@@ -191,7 +191,7 @@ let bv = BVARG
 
 if (KIND === 'best') {
   const best = bestToday()
-  if (!best) { console.error('✗ 今天还没评过分 —— 先用 `score <BV> --score N` 记分，再发 ✗'); process.exit(5) }
+  if (!best) { console.error('✗ 今天还没评过分 —— 先用 `score <BV> --fits "…" --funny 0-4 --hooked 0-4 --reason "…"` 记分，再发 ✗'); process.exit(5) }
   bv = bv || best.bv
   if (bv !== best.bv) {
     console.error(`✗ 这类必须写当天评分最高的那条：现在是 ${best.bv}（${best.score}/20），你给的是 ${bv} ✗`)

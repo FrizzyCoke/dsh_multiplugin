@@ -25,17 +25,26 @@ export function saveScores(all) {
   } catch {}
 }
 
+/** 她给这条视频记过的最高分（近 14 天）；没评过 → null。分享类命令都用这个，不信传进来的数。 */
+export function recordedScore(bv) {
+  let best = null
+  for (const rows of Object.values(loadScores())) for (const r of Array.isArray(rows) ? rows : []) if (r?.bv === bv && (best === null || Number(r.score) > best)) best = Number(r.score)
+  return best
+}
+
 /** 记一次打分（同 BV 同日取最高） */
-export function recordScore({ bv, score, reason = '', title = '', up = '', mid = '' }) {
+export function recordScore({ bv, score, reason = '', title = '', up = '', mid = '', items = null, fits = null, dislikes = null, tname = '' }) {
+  // 2026-11-18：分项（标尺 lib/score-rubric.mjs）一起存，score 仍是总分（老读者不受影响）
+  const detail = { ...(items ? { items } : {}), ...(fits ? { fits } : {}), ...(dislikes?.length ? { dislikes } : {}), ...(tname ? { tname: String(tname).slice(0, 20) } : {}) }
   const all = loadScores()
   const day = today()
   const list = Array.isArray(all[day]) ? all[day] : []
   const prev = list.find((x) => x.bv === bv)
   if (prev) {
-    if (Number(score) > Number(prev.score ?? 0)) Object.assign(prev, { score: Number(score), reason, at: new Date().toISOString() })
+    if (Number(score) > Number(prev.score ?? 0)) Object.assign(prev, { score: Number(score), reason, at: new Date().toISOString(), ...detail })
     if (mid && !prev.mid) Object.assign(prev, { mid: String(mid), up: String(up ?? '').slice(0, 40) })
   } else {
-    list.push({ bv, score: Number(score), reason: String(reason ?? '').slice(0, 120), title: String(title ?? '').slice(0, 120), ...(mid ? { mid: String(mid), up: String(up ?? '').slice(0, 40) } : {}), at: new Date().toISOString() })
+    list.push({ bv, score: Number(score), reason: String(reason ?? '').slice(0, 120), title: String(title ?? '').slice(0, 120), ...(mid ? { mid: String(mid), up: String(up ?? '').slice(0, 40) } : {}), ...detail, at: new Date().toISOString() })
   }
   all[day] = list
   // 只留最近 14 天，别把文件养大

@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
 import { appendWatch } from '../lib/watch-history.mjs'
 import { formatShotsStats, pruneShots, shotsPath } from '../lib/shots-cache.mjs'
+import { rubricPromptLines } from '../lib/score-rubric.mjs'
 
 const argv = process.argv.slice(2)
 const bvid = argv.find((a) => !a.startsWith('--'))
@@ -276,15 +277,12 @@ if (!opt['no-frames']) {
 
 // ── 评分卡（--score）（2026-10-18 加，Kimi 提议）────────────────────
 // 目的：把"值不值"变成可审计的结构化判断；分数留进日记，一个月后能回看"当初为什么觉得值得"
+// 2026-11-18：旧的五项卡（信息密度 / 表达质量…）跟她的口味对着干（标题党在她爱看里却要扣分），而且只有她自己填总分。
+//   换成统一标尺（lib/score-rubric.mjs）：14 分代码算，她只给 --fits / --dislike / --funny / --hooked。
 if (opt.score) {
-  console.log('\n══════════ 评分卡（每项 0-4 分，满 20）══════════')
-  console.log('  信息密度 __/4   看完学到东西了吗')
-  console.log('  偏好交集 __/4   和 config.like 重合吗（对照 dislike 扣分）')
-  console.log('  新颖度   __/4   对照日记「看过的」，主人大概率不知道吗')
-  console.log('  情绪价值 __/4   好笑 / 治愈 / 震撼，至少占一样')
-  console.log('  表达质量 __/4   UP 讲得清楚吗，还是标题党')
-  console.log('  → 合计 __/20；**超过 12 就发**（不到 13 = 今天没有值得发的 ✓）')
-  console.log('  （填完写进日记：日期 + BV + 分数 + 一句理由）')
+  const C = config()
+  console.log('\n══════════ 打分标尺（总分代码算）══════════')
+  for (const l of rubricPromptLines(C.scoring, C.preferences?.like ?? [], C.preferences?.dislike ?? [])) console.log(l)
 }
 // ── 观看历史（2026-10-23 加）────────────────────────────────────────────
 // 设置页「观看历史」直接读这份 append-only JSONL；浅看/深看都记。

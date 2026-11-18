@@ -37,7 +37,7 @@ const map = {
   mood: ['commands/mood.mjs', '心情：看现在的心情 / note --delta ±1~2 --why …（他说的好笑/暖 +，冲你 -；代码夹幅度和速度）'],
   joke: ['commands/joke.mjs', '你们之间的梗：list / add --text … --source BV…|dm / use --id N（必须有出处，一天最多翻一个旧梗）'],
   follow: ['commands/follow.mjs', '关注 UP：--suggest（14 天 ≥3 条对胃口才够格）/ --mid N --dry|--go（一天最多 2 个）'],
-  score: ['commands/score.mjs', '记分（每天动态要用）：score <BV> --score 0-20 / --today / --best'],
+  score: ['commands/score.mjs', '记分（标尺：口味/他的口味/记忆/新鲜由代码算）：score <BV> --fits … --funny 0-4 --hooked 0-4 --reason … / --today / --best'],
   daily: ['commands/daily.mjs', '四类动态各一天一条：--kind best(8:00 最高分视频) / game(12:00 游戏AI二创) / anime(16:00 动漫) / gaming(20:00 游戏区)'],
   'share-dynamic': ['commands/share-dynamic.mjs', '每日分享 → 自己的动态：转发视频卡片 + 分享额度判重 + 与四类动态至少隔 30 分钟（--bvid --text --score --reason --dry|--go）'],
   gamefeed: ['commands/gamefeed.mjs', '候选池：默认给今天轮到的游戏 + AI 二创，已排除看过的/最近 3 天推过的；--for anime / --for gaming 给动漫/游戏区'],

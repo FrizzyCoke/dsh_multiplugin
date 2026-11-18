@@ -27,6 +27,7 @@ import { normalizeCardMode } from '../../../src/share-mode.js';
 import { normalizeClockText, normalizeWindow } from '../tools/lib/time-window.mjs';
 import { normalizeEnergy, windowExtras } from '../tools/lib/night-schedule.mjs';
 import { normalizeMoodConfig } from '../tools/lib/mood.mjs';
+import { normalizeScoringConfig } from '../tools/lib/score-rubric.mjs';
 
 export const MASK = '********';
 
@@ -599,6 +600,8 @@ export function normalizeBiliConfig(input) {
   cfg.night.energy = normalizeEnergy(cfg.night.energy);
   // 2026-11-18：心情（视频内容 / 他私信的内容 / 他回不回 → 影响刷多少、主动找他多少；见 tools/lib/mood.mjs）。
   cfg.mood = normalizeMoodConfig(cfg.mood);
+  // 2026-11-18：打分标尺的各项权重（tools/lib/score-rubric.mjs）
+  cfg.scoring = normalizeScoringConfig(cfg.scoring);
   cfg.night.skipChance = finiteNumber(cfg.night.skipChance, 0.3, 0, 0.95);
   cfg.night.maxVideos = finiteNumber(cfg.night.maxVideos, 5, 1, 20, { integer: true });
   cfg.night.minGapMin = finiteNumber(cfg.night.minGapMin, 20, 0, 120, { integer: true });

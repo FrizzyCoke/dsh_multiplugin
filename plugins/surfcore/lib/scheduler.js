@@ -27,6 +27,7 @@ import { loadScores } from '../tools/lib/scores.mjs'
 import { chatCapFor, checkIgnored, decayedMood, moodGuidance, ownerReplied, readMood, writeMood } from '../tools/lib/mood.mjs'
 import { effectiveMinScore, ownerLines, reactionLines } from '../tools/lib/owner-taste.mjs'
 import { dueLines, readDates } from '../tools/lib/dates.mjs'
+import { rubricPromptLines } from '../tools/lib/score-rubric.mjs'
 import { freeLimits } from '../tools/lib/limits.mjs'
 import { config } from '../tools/lib/config.mjs'
 import { pendingCount as attackPending } from '../tools/lib/attacks.mjs'
@@ -388,7 +389,7 @@ export function ownerDmLines({ moodValue = 0, bvids = [], minScore = 13 } = {}) 
     '【先感觉一下他这句】真把你逗笑了 / 暖到你 → `mood note --delta 1`（特别好笑 2）`--why "他说的啥"`；冲你 / 敷衍你 → `--delta -1`；普通的话不用记。',
     '   他逗到你了就回得带劲点，想接着聊可以多回一两句（还是在私信上限里）。',
     ...bvids.flatMap((bv) => [
-      `🎬 **他发了视频 ${bv}，一起看**：\`debrief ${bv} --no-frames\` 看懂 → \`score ${bv} --score N --reason "…"\` → 用 --reply 回他你真实的反应（像一起刷到的，不是写影评）。`,
+      `🎬 **他发了视频 ${bv}，一起看**：\`debrief ${bv} --no-frames\` 看懂 → \`score ${bv} --fits "…" --funny 0-4 --hooked 0-4 --reason "…"\` → 用 --reply 回他你真实的反应（像一起刷到的，不是写影评）。`,
       `   想说哪一段最好笑：**只用 debrief 里弹幕热区 / 字幕给出的时间**，写成「3:42 那段」并带链接 https://www.bilibili.com/video/${bv}/?t=秒数；debrief 里没有时间就别编。`,
     ]),
     '【你们的梗】`joke list` 看；偶尔顺嘴用一个（`joke use --id N`，一天最多一个）。他这句要是成了你们之间的新梗 → `joke add --text "梗" --source dm`。',
@@ -500,7 +501,8 @@ export function wakePrompt(st, tools = '') {
     '     （每搭一条，脚本会自动给你发一条带【主动搭话】tag 的私信报备 ✓）',
     '     ⚠️ 别逐条盖楼、别跟人抬杠 —— 一句话说完就走 ✓',
     // 2026-10-21（用户定）：**每天一条动态** —— 写当天评分最高的那条
-    `4.9) ⭐ **记分**：深读过的每条都记一下 \`score <BV> --score N --reason "…"\`（0~20 分，没到线也记 ✓；到 ${shareLine(B)} 分才能分享，代码会查）`,
+    `4.9) ⭐ **记分**：深读过的每条都记（没到线也记 ✓；总分到 ${shareLine(B)} 才能分享，代码会查）`,
+    ...rubricPromptLines(B.scoring, B.preferences?.like ?? [], B.preferences?.dislike ?? []),
     '     —— 今天的动态要从这里面挑"最高分那条"，不记分就发不出去 ✗',
     // 2026-11-18：动态只在设置页打开的类里出现（以前这两步无条件写进提示，关掉了她还会去试）。
     ...(dynamicsEnabled(B) && K.best?.enabled !== false ? [
@@ -532,7 +534,7 @@ export function wakePrompt(st, tools = '') {
     ...ownerTasteLines(B),
     '5) 按「标尺」打分排序，只对第一名考虑分享；**先看 share.via**：',
     `   · 当前 share.via=${B.share?.via ?? 'dynamic'}；**默认 via=dynamic：发到自己的 B站 动态，不在评论区 @ 我** ✓`,
-    '   · via=dynamic：`share-dynamic --bvid <BV> --text "<分享内容>" --score <N> --reason "<为什么值得分享>" --dry` → `--go`',
+    '   · via=dynamic：`share-dynamic --bvid <BV> --text "<分享内容>" --reason "<为什么值得分享>" --dry` → `--go`（分数用你 score 记过的，不用再报）',
     '     - 会找这条视频已有的 AV 动态并**转发**：新动态 = 你的话 + **可点视频卡片**（找不到卡片会拒绝；`--allow-text` 才退“文字+链接”）',
     `     - 和四类动态**共用间隔**：任意两条 ≥${B.dynamics?.gapMin ?? 30} 分钟（命令会查 daily-dynamic.json，不够就拒 ✓）`,
     '     - 占用分享额度（≤shareDaily/天 · 同一视频 7 天一次），发完写 daily-dynamic.json 并报备 ✓',
@@ -546,7 +548,7 @@ export function wakePrompt(st, tools = '') {
       : ['   · via=dm：**不发公开评论** ✗ → dm --msg "<分享内容> 视频：https://www.bilibili.com/video/<BV>/ " **--share --target BV…** --go ✓']),
     `     ⚠️ 必须带 --share：与评论区 @ 共用同一本额度账（≤${B.quota?.shareDaily ?? 3}/天 · 同一视频 7 天一次）；不带就只是推送 ✗`,
     '     ⚠️ 必须带视频链接：链接里的 BV 就是「同一视频」的判重依据 ✓',
-    '   · via=comment：comment --share --auto --reason … --score … --rank 1（旧功能，仍可用 ✓）',
+    '   · via=comment：comment --share --auto --reason … --rank 1（旧功能，仍可用 ✓；分数用 score 记过的）',
     ...(Number(B.share?.chatDaily) > 0 && !SILENT
       ? [
         `5.8) 💬 **找我唠两句**（2026-11-18 主人定：多在 B站 私信跟他聊）：这一趟刷到好笑的、想吐槽的、想起他的 → 直接私信我一句，像兄弟随口说话，`,
@@ -1484,7 +1486,7 @@ export function startScheduler(ctx, opts) {
               ...(pinOf(kind) ? [`0) ⭐ 今天这条**主人已经拍板**：${pinOf(kind)}（别再自己挑了，直接用这个 ✓）`] : []),
               ...(noteOf(kind) ? [`0.5) ⭐ **主人给的要点，必须写进正文**：${noteOf(kind)}`] : []),
               kind === 'best'
-                ? '1) `score --best` 看今天最高分那条；还没记分就先 `score <BV> --score N` 记上'
+                ? '1) `score --best` 看今天最高分那条；还没记分就先 `score <BV> --fits "…" --funny 0-4 --hooked 0-4 --reason "…"` 记上'
                 : `1) \`gamefeed${kind === 'game' ? '' : ' --for ' + kind}\` 看候选 → 挑 2~3 条 debrief，选一条真的做得好的`,
               `2) 写正文（${k.minLen}~${k.maxLen} 字，用你的口吻评价，别只说"好看"）`,
               inSlot
