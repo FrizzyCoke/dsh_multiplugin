@@ -1361,6 +1361,36 @@ export function ingestInboxLines(card, lines, config = {}, now = Date.now()) {
     const direct = item.direct === true || item.quoteSelf === true || isOwner;
     const conversationKey = String(item.conversationKey ?? '');
 
+    // 看屏幕/看游戏的观察（mcp-memory-write 写入）：保留调用方给的标题/细节/标签/重要度。
+    // scope 默认 pet：和桌宠记忆一样不进 B站（用户选择不打通 B站）。
+    if (String(item.platform ?? '').toLowerCase() === 'screen') {
+      const scope = ['qq', 'bili', 'shared', 'pet'].includes(item.scope) ? item.scope : 'pet';
+      const importance = Number(item.importance);
+      const result = addMemoryRecord(card, {
+        source: 'screen-watch',
+        sourceId: '',
+        platform: scope === 'pet' ? 'pet' : 'shared',
+        scope,
+        text,
+        detail: String(item.detail ?? ''),
+        title: String(item.title ?? '').trim() || `看屏幕：${short(text, 22)}`,
+        isSelf: true,
+        direct: true,
+        createdAt: at,
+        lastSeenAt: at,
+        speaker: '我',
+        private: scope === 'pet' || scope === 'qq',
+        conversationKey: 'screen',
+        tags: ['screen', ...asArray(item.tags).map(String)],
+        ...(item.importance !== null && Number.isFinite(importance) ? { manualImportance: importance } : {}),
+      }, cfg, now);
+      if (result.added) {
+        added += 1;
+        touched += touchMemories(card, text, at);
+      }
+      continue;
+    }
+
     // ── 桌宠对话（2026-10-25）─────────────────────────────────────────────
     // 和 QQ / B站 共用同一张卡、同一条遗忘曲线；来源/平台/scope 独立：
     //   · scope='pet'：默认不进 B站 注入块（桌宠是私下的），但 QQ / 桌宠 都读得到；
@@ -1749,6 +1779,7 @@ function recordIsPrivate(record) {
 }
 
 function memorySourceLabel(record) {
+  if (record?.source === 'screen-watch') return '看屏幕';
   if (recordIsPrivate(record)) return '私聊';
   if (record?.platform === 'pet' || record?.scope === 'pet') return '桌宠';
   if (record?.platform === 'bili' || record?.scope === 'bili') return 'B站';
@@ -1769,6 +1800,11 @@ function recordLine(record, { platform = 'qq', full = false } = {}) {
     body = `${record.title ? `好像有「${short(record.title, 22)}」这件事` : '有一些模糊的印象'}…（想不起来了）`;
   } else {
     body = short(rawText, record.clarity === 'vivid' ? 200 : 130);
+    // 看屏幕的记忆带细节；模糊/残影分支不带 → 细节随遗忘先消失。
+    if (record.source === 'screen-watch' && record.detail) {
+      const detail = redactForMemory(record.detail, { scope, maxChars: 200 });
+      if (detail) body += `（${short(detail, record.clarity === 'vivid' ? 140 : 80)}）`;
+    }
   }
   const source = memorySourceLabel(record);
   if (record.isSelf && record.speaker) body = `${record.speaker}（${source}）：${body}`;
@@ -2259,9 +2295,10 @@ export function appendMemoryInboxEvent(paths, event = {}, { maxBytes = 1024 * 10
         fs.renameSync(paths.inbox, `${paths.inbox}.1`);
       }
     } catch {}
+    const isScreen = event.platform === 'screen';
     const line = JSON.stringify({
       at: iso(timeOf(event.at, Date.now())),
-      platform: event.platform === 'pet' ? 'pet' : 'qq',
+      platform: event.platform === 'pet' ? 'pet' : (isScreen ? 'screen' : 'qq'),
       kind: event.kind === 'private' ? 'private' : 'group',
       sender: short(event.sender ?? '', 40),
       senderId: String(event.senderId ?? ''),
@@ -2274,6 +2311,13 @@ export function appendMemoryInboxEvent(paths, event = {}, { maxBytes = 1024 * 10
       direct: event.direct === true,
       quoteSelf: event.quoteSelf === true,
       text,
+      ...(isScreen ? {
+        title: short(String(event.title ?? ''), 80),
+        detail: redactForMemory(event.detail ?? '', { scope: 'qq', maxChars: 500 }) || '',
+        tags: asArray(event.tags).map((tag) => short(String(tag), 24)).filter(Boolean).slice(0, 10),
+        scope: ['qq', 'bili', 'shared', 'pet'].includes(event.scope) ? event.scope : 'pet',
+        importance: Number.isFinite(Number(event.importance)) ? clamp(Math.round(Number(event.importance)), 1, 100) : null,
+      } : {}),
     });
     fs.appendFileSync(paths.inbox, `${line}\n`, { encoding: 'utf8', mode: 0o600 });
     return true;

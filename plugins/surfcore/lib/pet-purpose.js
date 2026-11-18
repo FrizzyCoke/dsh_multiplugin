@@ -410,7 +410,7 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
       return { ok: false, reason: 'focus', error: '专注模式开着：不会主动打扰' };
     }
     if (!chat.llmReady()) return { ok: false, reason: 'llm', error: 'DSH 模型服务还没就绪' };
-    if (!previewOnly && !chat.online().online) {
+    if (!previewOnly && !chat.online().online && chat.frontendOnline?.() !== true) {
       return { ok: false, reason: 'pet-offline', error: '桌宠没在运行（先在「桌宠」页启动，或把载体切回 QQ）' };
     }
 
@@ -434,7 +434,7 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
             dshReady: true,
             paused: false,
             ownerAllowed: true,
-            busy: running,
+            busy: false,
             ownerIdleMs: ownerIdleMs(now),
             friendOk: true,
             budgetBlocked,
@@ -587,7 +587,7 @@ export function createPetPurposeService({ chat, tokenBudget = null, pluginLog = 
       return;
     }
     lastTickAt = Date.now();
-    if (!chat.online().online) {
+    if (!chat.online().online && chat.frontendOnline?.() !== true) {
       await fallbackToQQ();
       return;
     }
