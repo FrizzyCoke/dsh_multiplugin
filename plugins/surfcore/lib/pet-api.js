@@ -30,7 +30,7 @@ const PET_BODY_LIMIT = 256 * 1024;
  * @param {() => string} opts.currentDshUrl   DSH 当前 Web 地址
  * @param {(msg:string, ...args:any[])=>void} [opts.pluginLog]
  */
-export function createPetApiService({ chat, purpose, petService, stateDir, currentDshUrl, pluginLog = () => {}, version = '' }) {
+export function createPetApiService({ chat, purpose, petService, stateDir, currentDshUrl, pluginLog = () => {}, version = '', screenWatch = null, dshPetBridge = null, dshPetMenu = null, quickChat = null, dailyRecap = null, storage = null }) {
   const root = path.join(stateDir, 'pet');
   const hostFile = path.join(root, 'host.json');
   let lastHostWrite = 0;
@@ -155,6 +155,50 @@ export function createPetApiService({ chat, purpose, petService, stateDir, curre
       try { body = JSON.parse((await readBody(req, PET_BODY_LIMIT)) || '{}'); } catch {}
       const result = await purpose.run({ force: body.force !== false });
       json(res, result.ok ? 200 : 409, result);
+      return;
+    }
+    // 快捷对话小助手（quickchat/main.cjs）调用：发一句话 / 语音转文字 / 状态。
+    if (suffix === '/quickchat/send' || suffix === '/quickchat/hear' || suffix === '/quickchat/status') {
+      if (!quickChat) { json(res, 503, { ok: false, code: 'quickchat.unavailable', error: '快捷对话不可用', hint: '更新 SurfCore 后重启 DSH' }); return; }
+      if (req.method === 'GET' && suffix === '/quickchat/status') { json(res, 200, quickChat.status()); return; }
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: 'method not allowed' }); return; }
+      let body = {};
+      try { body = JSON.parse((await readBody(req, 12 * 1024 * 1024)) || '{}'); } catch { json(res, 400, { ok: false, code: 'quickchat.bad-json', error: '请求体不是合法 JSON' }); return; }
+      const result = suffix === '/quickchat/send'
+        ? await quickChat.send({ text: body.text, withScreen: body.withScreen === true })
+        : await quickChat.hear({ audio: body.audio });
+      json(res, result.ok ? 200 : 502, result);
+      return;
+    }
+    // 存储封顶：状态 / 现在清一次。
+    if (suffix === '/storage/status' || suffix === '/storage/run') {
+      if (!storage) { json(res, 503, { ok: false, code: 'storage.unavailable', error: '存储清理服务不可用', hint: '更新 SurfCore 后重启 DSH' }); return; }
+      if (req.method === 'GET' && suffix === '/storage/status') { json(res, 200, storage.status()); return; }
+      if (req.method === 'POST' && suffix === '/storage/run') { json(res, 200, storage.run()); return; }
+      json(res, 405, { ok: false, error: 'method not allowed' }); return;
+    }
+    // 一天的回顾：状态 / 手动来一次（force，排障用；会真的发到桌宠）。
+    if (suffix === '/recap/status' || suffix === '/recap/run') {
+      if (!dailyRecap) { json(res, 503, { ok: false, code: 'recap.unavailable', error: '回顾服务不可用', hint: '更新 SurfCore 后重启 DSH' }); return; }
+      if (req.method === 'GET' && suffix === '/recap/status') { json(res, 200, dailyRecap.status()); return; }
+      if (req.method === 'POST' && suffix === '/recap/run') { const r = await dailyRecap.runOnce({ force: true }); json(res, r.ok ? 200 : 502, r); return; }
+      json(res, 405, { ok: false, error: 'method not allowed' }); return;
+    }
+    if (req.method === 'GET' && suffix === '/bridge/status') {
+      json(res, 200, dshPetBridge ? { ok: true, ...dshPetBridge.status(), menu: dshPetMenu?.status?.() ?? null } : { ok: false, code: 'bridge.unavailable', error: 'dsh-pet 联动不可用', hint: '更新 SurfCore 后重启 DSH' });
+      return;
+    }
+    // 看屏幕：状态 / 手动看一眼（deliver=false 只返回结果不弹气泡，排障用）。
+    if (req.method === 'GET' && suffix === '/screen/status') {
+      json(res, 200, screenWatch ? screenWatch.status() : { ok: false, code: 'screen.unavailable', error: '看屏幕服务不可用', hint: '更新 SurfCore 后重启 DSH' });
+      return;
+    }
+    if (req.method === 'POST' && suffix === '/screen/look') {
+      if (!screenWatch) { json(res, 503, { ok: false, code: 'screen.unavailable', error: '看屏幕服务不可用', hint: '更新 SurfCore 后重启 DSH' }); return; }
+      let body = {};
+      try { body = JSON.parse((await readBody(req, PET_BODY_LIMIT)) || '{}'); } catch {}
+      const result = await screenWatch.lookOnce({ force: true, deliver: body.deliver !== false, manual: true });
+      json(res, result.ok ? 200 : 502, result);
       return;
     }
     if (req.method === 'POST' && suffix === '/chat') {
