@@ -10,9 +10,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── pure ──
 const off = m.buildMenu({ enabled: false });
-check(off.labels.length === 1 && off.labels[0].includes('关'), 'off: only the "turn on" item');
+check(off.labels.length === 2 && off.labels[0].startsWith('专注模式') && off.labels[1].includes('看屏幕：关'), 'off: focus toggle + the "turn on" item', off.labels.join(' | '));
 const on = m.buildMenu({ enabled: true, ...m.SCREEN_PRESETS.mid.patch });
-check(on.labels.length === 5, 'on: toggle + 3 presets + look now', on.labels.join(' | '));
+check(on.labels.length === 6, 'on: focus + toggle + 3 presets + look now', on.labels.join(' | '));
 check(on.labels.every((l) => l.length <= 32 && !/[\x00-\x1f]/.test(l)) && new Set(on.labels).size === on.labels.length, 'labels valid for dsh-pet (≤32 chars, unique)');
 check(on.labels.some((l) => l.startsWith('●') && l.includes('中频')), 'current preset marked ●');
 check(m.currentPreset({ ...m.SCREEN_PRESETS.mid.patch, maxCommentsPerHour: 99 }) === 'custom', 'hand-tuned → custom (no preset ticked)');
@@ -59,12 +59,12 @@ const menu = m.createDshPetMenu({
 });
 menu.start();
 await sleep(150);
-check(owners.get('surfcore')?.size === 1, 'registers on start (off state: 1 item)');
+check(owners.get('surfcore')?.size === 2, 'registers on start (off state: focus + 1 item)');
 
-click('surfcore', [...owners.get('surfcore').keys()][0]);
+click('surfcore', [...owners.get('surfcore').keys()].find((l) => l.startsWith('看屏幕')));
 await sleep(300);
 check(sw.enabled === true && notes.at(-1)?.includes('开了'), 'click "开" → screen mode on + bubble', notes.at(-1));
-check(owners.get('surfcore')?.size === 5 && changed === 1, 'menu re-registered with presets after enabling');
+check(owners.get('surfcore')?.size === 6 && changed === 1, 'menu re-registered with presets after enabling');
 
 const highLabel = [...owners.get('surfcore').keys()].find((l) => l.includes('高频'));
 click('surfcore', highLabel); await sleep(300);
@@ -75,7 +75,7 @@ click('surfcore', '现在看一眼'); await sleep(300);
 check(looks === 1, '现在看一眼 → one look');
 
 owners.clear(); await sleep(500);
-check(owners.get('surfcore')?.size === 5, 'dsh-pet restarted (menu wiped) → re-registers automatically');
+check(owners.get('surfcore')?.size === 6, 'dsh-pet restarted (menu wiped) → re-registers automatically');
 
 bridgeOn = false; await sleep(500);
 check(!owners.has('surfcore'), 'bridge switched off → menu removed from the pet');

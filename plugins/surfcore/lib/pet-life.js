@@ -74,6 +74,7 @@ export function createPetLife({
   readConfig,
   readNight = () => ({}),
   readMoodCfg = () => ({}),
+  quiet = () => false,
   biliDir,
   currentDshUrl,
   lastChatAt = () => 0,
@@ -124,6 +125,10 @@ export function createPetLife({
         }
       }
       if (state.sleeping) return;
+      // 专注模式：不跳舞、不冒 B站 气泡（睡觉照常跟着作息）；B站 新动作的进度也跟上，别专注一关就补一堆
+      let focusQuiet = false;
+      try { focusQuiet = quiet() === true; } catch {}
+      if (focusQuiet) { state.lastEventAt = t; state.last = 'focus'; return; }
 
       // ③ B站 反应（分享优先，一次只演一个）
       if (c.biliReactions) {

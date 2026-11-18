@@ -103,7 +103,7 @@ export const RECAP_INSTRUCTION = [
   '只输出你要说的那句话。',
 ].join('\n');
 
-export function createDailyRecap({ chat, readConfig, biliDir, stateDir, tokenBudget = null, pluginLog = () => {}, now = () => new Date(), petPresent = () => true } = {}) {
+export function createDailyRecap({ chat, readConfig, biliDir, stateDir, tokenBudget = null, pluginLog = () => {}, now = () => new Date(), petPresent = () => true, quiet = () => false } = {}) {
   const stateFile = path.join(stateDir, 'recap', 'state.json');
   let timer = null;
   let running = false;
@@ -138,6 +138,10 @@ export function createDailyRecap({ chat, readConfig, biliDir, stateDir, tokenBud
       let present = true;
       try { present = petPresent() !== false; } catch {}
       if (!present) return { ok: true, skipped: 'no-pet' };
+      // 专注模式：先不说（不记「今天说过」），关了专注、当晚还来得及再说
+      let q = false;
+      try { q = quiet() === true; } catch {}
+      if (q) return { ok: true, skipped: 'focus' };
     }
     running = true;
     try {

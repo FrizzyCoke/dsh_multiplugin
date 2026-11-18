@@ -22,6 +22,7 @@ import path from 'node:path'
 import { config } from '../lib/config.mjs'
 import { buildDesktopToastScript } from '../lib/desktop-toast.mjs'
 import { QQ_CONFIG, QQ_STATE_DIR } from '../../lib/paths.js'
+import { SURFCORE_DIR } from '../lib/state-paths.mjs'
 
 const argv = process.argv.slice(2)
 const DRY = argv.includes('--dry')
@@ -202,9 +203,17 @@ async function sendCommand(cmd) {
   console.log('命令已执行 ✓')
 }
 
+// 专注模式（pet/focus.json，跟桌宠菜单 / 设置页同一个开关）
+function focusOn() {
+  try { return JSON.parse(fs.readFileSync(path.join(SURFCORE_DIR, 'pet', 'focus.json'), 'utf8'))?.enabled === true } catch { return false }
+}
+
 try {
   if (type === 'none') {
     console.log(DRY ? '[dry] 方式=none（不推送）→ 什么也不做 ✓' : '（方式=none：不推送）')
+  } else if (type === 'desktop' && focusOn()) {
+    // 2026-11-18：专注模式 —— 桌面通知不弹（内容照样记在日志 / 日记里）
+    console.log('（专注模式开着：桌面通知没弹）')
   } else if (type === 'desktop') {
     await sendDesktop()
   } else if (type === 'qq') {

@@ -27,9 +27,11 @@ export function currentPreset(screenWatch) {
 }
 
 /** 由当前配置生成菜单：labels（≤32 字、唯一）+ 每个标签对应的动作。 */
-export function buildMenu(screenWatch) {
+export function buildMenu(screenWatch, focusOn = false) {
   const on = screenWatch?.enabled === true;
   const actions = new Map();
+  // 2026-11-18：专注模式（不弹气泡、不配图；你找她照常回）
+  actions.set(focusOn ? '专注模式：开 ✓（点我关）' : '专注模式：关（点我开）', { type: 'focus', enable: !focusOn });
   actions.set(on ? '看屏幕：开 ✓（点我关）' : '看屏幕：关（点我开）', { type: 'toggle', enable: !on });
   if (on) {
     const cur = currentPreset(screenWatch);
@@ -44,6 +46,8 @@ export function buildMenu(screenWatch) {
 export function createDshPetMenu({
   readScreenWatch,
   saveScreenWatch,
+  readFocus = () => false,
+  setFocus = () => {},
   bridgeEnabled = () => true,
   currentDshUrl,
   onChanged = () => {},
@@ -76,7 +80,9 @@ export function createDshPetMenu({
   }
 
   async function register() {
-    const menu = buildMenu(readScreenWatch());
+    let focusOn = false;
+    try { focusOn = readFocus() === true; } catch {}
+    const menu = buildMenu(readScreenWatch(), focusOn);
     const key = menu.labels.join('|');
     if (key === registeredKey) return true;
     const r = await call('/menu/item', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ owner: OWNER, labels: menu.labels, target: 'both' }) });
@@ -96,6 +102,13 @@ export function createDshPetMenu({
     const action = actions.get(label);
     if (!action) return;
     lastClick = { label, at: Date.now() };
+    if (action.type === 'focus') {
+      // 开：先说一声再安静；关：先恢复再说
+      if (action.enable) { notify('专注模式开了：不弹气泡、不配图，你找我照常回'); setFocus(true); }
+      else { setFocus(false); notify('专注模式关了'); }
+      pluginLog(`[dsh-pet-menu] 专注模式 → ${action.enable ? '开' : '关'}`);
+      return;
+    }
     if (action.type === 'toggle') {
       saveScreenWatch({ enabled: action.enable });
       const preset = SCREEN_PRESETS[currentPreset(readScreenWatch())];

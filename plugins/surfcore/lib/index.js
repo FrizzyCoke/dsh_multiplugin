@@ -83,6 +83,7 @@ import { createAttachmentGc } from './attachment-gc.js';
 import { createHousekeeping } from './housekeeping.js';
 import { dueLines, readDates } from '../tools/lib/dates.mjs';
 import { createPetLife } from './pet-life.js';
+import { createFocusMode } from './focus-mode.js';
 import { addPending, applyMood, normalizeMoodConfig, ownerReplied, readMood, writeMood } from '../tools/lib/mood.mjs';
 import { createScreenSource } from './screen-capture.js';
 import { createScreenWatch } from './screen-watch.js';
@@ -295,6 +296,15 @@ export function apply(ctx) {
     },
   });
   const petPurpose = createPetPurposeService({ chat: petChat, tokenBudget, pluginLog, callBridge });
+  // 专注模式（lib/focus-mode.js）：她主动冒的都不弹、dsh-pet 不碎碎念不配图；你找她照常回。
+  const focusMode = createFocusMode({
+    chat: petChat,
+    dshPetConfigPath: path.join(DSH_HOME, 'dsh-pet', 'main-config.jsonc'),
+    stateDir: STATE_DIR,
+    backupDir: path.join(STATE_DIR, 'backups'),
+    pluginLog,
+  });
+  const focusOn = () => { try { return petChat.focusEnabled() === true; } catch { return false; } };
   // 他说过的日子（tools/lib/dates.mjs）：今天 / 明天到期的也进桌宠的 system prompt，跟 B站 同一份。
   petChat.addContextSource(() => {
     try { return dueLines(readDates(path.join(activePlatformStateDir(BILI_DIR), 'dates.json'))).join('\n'); } catch { return ''; }
@@ -311,6 +321,7 @@ export function apply(ctx) {
     extraSystem: () => screenWatch.dshPetHint(),
     // 「往左走」「过来」→ 她真的走过去（lib/pet-move.js；每条桌宠消息多一次很小的判断）。
     onMoveIntent: (text, petId) => { petOwnerSpoke(); return petMove.decide(text, petId); },
+    quiet: () => focusOn(),
   });
   // 心情（tools/lib/mood.mjs，B站 那份 mood.json 是唯一状态）：桌宠这边的对话也算进去（2026-11-18 用户）。
   const biliMoodCfg = () => { try { return JSON.parse(fs.readFileSync(BILI_CONFIG, 'utf8')).mood ?? {}; } catch { return {}; } };
@@ -363,7 +374,9 @@ export function apply(ctx) {
     currentDshUrl: () => currentDshUrl(),
     onChanged: () => screenWatch.kick(),
     onLookNow: () => { void screenWatch.lookOnce({ force: true, deliver: true }); },
-    notify: (text) => { void dshPetBridge.broadcast(text); },
+    notify: (text) => { void dshPetBridge.broadcast(text, { force: true }); }, // 你点菜单的确认，专注时也弹
+    readFocus: () => focusOn(),
+    setFocus: (on) => focusMode.set(on, 'dsh-pet-menu'),
     pluginLog,
   });
   // 桌宠的生活（lib/pet-life.js）：心情上脸、跟着作息睡觉、她在 B站 干了啥有反应。不调模型。
@@ -371,6 +384,7 @@ export function apply(ctx) {
     readConfig: () => readUnified().config?.petLife,
     readNight: () => { try { return JSON.parse(fs.readFileSync(BILI_CONFIG, 'utf8')).night ?? {}; } catch { return {}; } },
     readMoodCfg: () => biliMoodCfg(),
+    quiet: () => focusOn(),
     biliDir: () => activePlatformStateDir(BILI_DIR),
     currentDshUrl: () => currentDshUrl(),
     lastChatAt: () => Math.max(Number(petChat.lastActivity().lastChatAt) || 0, Number(dshPetBridge.status().lastRecallAt) || 0),
@@ -386,6 +400,7 @@ export function apply(ctx) {
     tokenBudget,
     pluginLog,
     petPresent: () => petChat.online().online === true || petChat.frontendOnline() === true,
+    quiet: () => focusOn(),
   });
   // 系统级快捷键 + 置顶小输入框（独立小进程，见 lib/quick-chat.js）。
   const quickChat = createQuickChat({
@@ -408,6 +423,7 @@ export function apply(ctx) {
     dshPetMenu,
     quickChat,
     dailyRecap,
+    focusMode,
     storage: { status: () => ({ ok: true, housekeeping: housekeeping.status(), attachments: attachmentGc.status() }), run: () => ({ ok: true, housekeeping: housekeeping.run(), attachments: attachmentGc.sweep() }) },
     chat: petChat,
     purpose: petPurpose,
@@ -4482,6 +4498,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   try { dshPetBridge.start(); } catch (error) { pluginLog('[dsh-pet-bridge] 启动失败：', String(error?.message ?? error)); }
   try { screenWatch.start(); } catch (error) { pluginLog('[screen-watch] 启动失败：', String(error?.message ?? error)); }
   try { dshPetMenu.start(); } catch (error) { pluginLog('[dsh-pet-menu] 启动失败：', String(error?.message ?? error)); }
+  try { focusMode.reconcile(); } catch (error) { pluginLog('[focus] 启动对齐失败：', String(error?.message ?? error)); }
   try { quickChat.start(); } catch (error) { pluginLog('[quick-chat] 启动失败：', String(error?.message ?? error)); }
   try { dailyRecap.start(); } catch (error) { pluginLog('[daily-recap] 启动失败：', String(error?.message ?? error)); }
   try { attachmentGc.start(); } catch (error) { pluginLog('[attachment-gc] 启动失败：', String(error?.message ?? error)); }

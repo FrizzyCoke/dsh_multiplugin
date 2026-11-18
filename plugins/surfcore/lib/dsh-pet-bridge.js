@@ -58,7 +58,7 @@ export function stripJsonComments(text) {
   return out;
 }
 
-export function createDshPetBridge({ ctx, chat, readConfig, currentDshUrl, dshPetUserRoot, pluginLog = () => {}, onUserMessage = null, extraSystem = null, onMoveIntent = null } = {}) {
+export function createDshPetBridge({ ctx, chat, readConfig, currentDshUrl, dshPetUserRoot, pluginLog = () => {}, onUserMessage = null, extraSystem = null, onMoveIntent = null, quiet = () => false } = {}) {
   let unregister = null;
   let removeFrontend = null;
   let timer = null;
@@ -181,9 +181,13 @@ export function createDshPetBridge({ ctx, chat, readConfig, currentDshUrl, dshPe
     if (written > 0) lastCaptureAt = Date.now();
   }
 
-  async function broadcast(text) {
+  async function broadcast(text, { force = false } = {}) {
     const c = cfg();
     if (!c.enabled || !c.mirrorProactive) return { ok: false, code: 'disabled' };
+    // 专注模式：她主动冒的气泡不弹（你在菜单里点的确认用 force 照弹）
+    let q = false;
+    try { q = quiet() === true; } catch {}
+    if (q && !force) return { ok: false, code: 'focus' };
     const base = String(currentDshUrl() || '').replace(/\/+$/, '');
     if (!base) { fail('dsh-pet-bridge.no-dsh-url', '找不到 DSH 地址，主动搭话没发到 dsh-pet'); return { ok: false, code: 'no-dsh-url' }; }
     const ids = visiblePetIds();
