@@ -26,15 +26,16 @@ export function saveScores(all) {
 }
 
 /** 记一次打分（同 BV 同日取最高） */
-export function recordScore({ bv, score, reason = '', title = '' }) {
+export function recordScore({ bv, score, reason = '', title = '', up = '', mid = '' }) {
   const all = loadScores()
   const day = today()
   const list = Array.isArray(all[day]) ? all[day] : []
   const prev = list.find((x) => x.bv === bv)
   if (prev) {
     if (Number(score) > Number(prev.score ?? 0)) Object.assign(prev, { score: Number(score), reason, at: new Date().toISOString() })
+    if (mid && !prev.mid) Object.assign(prev, { mid: String(mid), up: String(up ?? '').slice(0, 40) })
   } else {
-    list.push({ bv, score: Number(score), reason: String(reason ?? '').slice(0, 120), title: String(title ?? '').slice(0, 120), at: new Date().toISOString() })
+    list.push({ bv, score: Number(score), reason: String(reason ?? '').slice(0, 120), title: String(title ?? '').slice(0, 120), ...(mid ? { mid: String(mid), up: String(up ?? '').slice(0, 40) } : {}), at: new Date().toISOString() })
   }
   all[day] = list
   // 只留最近 14 天，别把文件养大

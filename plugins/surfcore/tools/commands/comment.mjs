@@ -20,6 +20,8 @@ import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
+import { effectiveMinScore } from '../lib/owner-taste.mjs'
+import { readMood } from '../lib/mood.mjs'
 import { assertInteractEnabled, checkCommentAge, printAgeBlock } from '../lib/interact.mjs'
 // 2026-10-20（管理员定）：普通评论的硬闸门 —— 想说话就说话，但别把自己说成刷屏号 ✗
 //   一天 30 条 · 同一 UP 10 分钟 ≤1 · 同一视频 60 分钟 ≤1（默认值在 lib/limits.mjs；
@@ -147,7 +149,8 @@ if (SHARE) {
   {
     const reason = String(args.get('reason') ?? '').trim()
     if (reason.length < 8) { console.error('--share 必须带 --reason "为什么值得占用主人一次注意力"（≥8 字）'); process.exit(2) }
-    const minScore = Number(config().share?.minScore ?? 7)
+    // 2026-11-18：门槛跟着他对分享的反应走（owner-taste.mjs，最多 ±2）
+    const minScore = effectiveMinScore(Number(config().share?.minScore ?? 7), readMood(biliState('mood.json'))).minScore
     const score = Number(args.get('score'))
     if (!Number.isFinite(score) || String(args.get('score') ?? '') === '') { console.error(`--share 必须带 --score（每项 0-4，满 20；阈值 ${minScore}，超过 12 就发）`); process.exit(2) }
     if (score < minScore) { console.error(`✗ 评分 ${score} < 阈值 ${minScore} → 这条不值得发（"今天没有值得发的"是合法结果）`); process.exit(2) }
