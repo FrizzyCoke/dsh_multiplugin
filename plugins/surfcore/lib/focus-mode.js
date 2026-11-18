@@ -7,7 +7,7 @@
  *   · dsh-pet 这边：它自己的碎碎念（含配图）、对话配图、工作状态气泡 由它的配置开关控制。
  *     开专注时把这几项记下原值、改成关；关专注时原样恢复。直接改它的 main-config.jsonc：
  *     它的碎碎念计时器每轮都重读配置，所以**不用重启桌宠**（走它的保存接口会重启桌宠窗口）。
- *     原值存在 state/focus-dshpet.json；SurfCore 中途重启也能在启动时对上（开着就补关、关着就补恢复）。
+ *     原值存在 surfcore/focus-dshpet.json；SurfCore 中途重启也能在启动时对上（开着就补关、关着就补恢复）。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -73,7 +73,7 @@ export function createFocusMode({ chat, dshPetConfigPath, stateDir, backupDir = 
     const saved = readJson(snapFile, null);
     if (!saved) return { ok: true, already: true };
     const cfg = readJson(dshPetConfigPath, null);
-    if (!cfg) return { ok: false, code: 'focus.dshpet-config', error: '读不到 dsh-pet 的配置，恢复不了', hint: '原值还在 state/focus-dshpet.json，修好 dsh-pet 后再关一次专注' };
+    if (!cfg) return { ok: false, code: 'focus.dshpet-config', error: '读不到 dsh-pet 的配置，恢复不了', hint: '原值还在 surfcore/focus-dshpet.json，修好 dsh-pet 后再关一次专注' };
     writeAtomic(dshPetConfigPath, restoreConfig(cfg, saved.snap));
     try { fs.renameSync(snapFile, `${snapFile}.restored`); } catch {}
     return { ok: true };

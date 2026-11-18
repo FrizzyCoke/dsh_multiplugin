@@ -22,7 +22,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const ASAR_DEFAULT = 'D:\\deepseek\\resources\\app.asar';
+// 2026-11-18：原来写死 D:\deepseek（别的机器的装法）→ 本机 guard:check 直接 ENOENT、从没真正检查过。
+// 现在：DSH_ASAR 环境变量 > 常见安装位置里第一个存在的 > 旧默认（找不到时报错里能看出找的是哪）。
+const ASAR_CANDIDATES = [
+  process.env.DSH_ASAR,
+  process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs', 'DSH Desktop', 'resources', 'app.asar'),
+  process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'DSH Desktop', 'resources', 'app.asar'),
+  'D:\\deepseek\\resources\\app.asar',
+].filter(Boolean);
+export const ASAR_DEFAULT = ASAR_CANDIDATES.find((p) => { try { return fs.statSync(p).isFile(); } catch { return false; } })
+  ?? ASAR_CANDIDATES[ASAR_CANDIDATES.length - 1];
 export const TARGET = '/dsh/node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js';
 
 const OLD = 'throw new Error(`corrupt session log "${path}": header id "${meta.id}" and cwd identify "${expectedPath}"`)';

@@ -406,12 +406,29 @@ export async function rebuildAllVectorIndexes(config, models = []) {
   };
 }
 
+/** 同一个失败只返回一次要记的话；换了错误或恢复时再返回。 */
+export function createFailLogGate() {
+  let lastFailKey = '';
+  return (result) => {
+    if (!result) return null;
+    if (!result.ok) {
+      const key = `${result.code} ${result.error}`;
+      const line = key !== lastFailKey ? `向量记忆整理失败：${key}（同样的错误不再重复记，恢复后会说）` : null;
+      lastFailKey = key;
+      return line;
+    }
+    if (lastFailKey) { lastFailKey = ''; return '向量记忆恢复正常'; }
+    return null;
+  };
+}
+
 export function startVectorMemoryTimer({ log = () => {}, config = null } = {}) {
   if (process.env.SURFCORE_DISABLE_VECTOR_TIMER === '1') {
     return { stop() {}, started: false };
   }
   let stopped = false;
   let timer = null;
+  const failLog = createFailLogGate();
   const tick = async () => {
     if (stopped) return null;
     try {
@@ -423,7 +440,10 @@ export function startVectorMemoryTimer({ log = () => {}, config = null } = {}) {
       } else if (result.changed) {
         log(`向量记忆已整理：新增 ${result.added ?? 0} 条，编码 ${result.embedded ?? 0} 条，索引 ${result.status.indexed} 条`);
       }
-      if (!result.ok) log(`向量记忆整理失败：${result.code} ${result.error}`);
+      // 2026-11-18：没装 Embedding 运行时的机器上每 10 分钟刷一条一模一样的失败（一天 58 条），把真错误淹掉了 →
+      // 同一个错误只记一次；换了错误或恢复了再记。状态页的 lastError 照样一直显示。
+      const line = failLog(result);
+      if (line) log(line);
       return result;
     } catch (error) {
       log('向量记忆整理异常：', error?.message ?? error);

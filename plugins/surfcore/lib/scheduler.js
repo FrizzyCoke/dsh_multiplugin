@@ -228,7 +228,11 @@ export function formatListenError(error) {
   const text = isProgrammerError
     ? String(error?.stack || error?.message || error)
     : String(error?.message || error);
-  return text.slice(0, 800);
+  // 2026-11-18：Node 的 fetch 只抛「TypeError: fetch failed」，真正原因（ECONNRESET / 超时 / 哪个主机）在 cause 里 →
+  // 以前日志里看不出是网络抖还是程序错。把 cause 的 code + message 放在最前面。
+  const c = error?.cause;
+  const cause = c ? `［原因 ${[c.code, c.message].filter(Boolean).join(' ')}${c.host || c.hostname ? ` @${c.host || c.hostname}` : ''}］ ` : '';
+  return (cause + text).slice(0, 800);
 }
 
 /** 叫醒她时塞进去的那段话（她醒来第一眼看到的就是它） */
