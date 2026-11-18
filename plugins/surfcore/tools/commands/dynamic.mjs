@@ -122,10 +122,13 @@ try {
     const id = out.data?.dyn_id_str ?? out.data?.dyn_id
     console.log(`  ✅ 已发布  dyn_id=${id}`)
     console.log(`  https://t.bilibili.com/${id}`)
+    process.exit(0)
   } else {
     console.log(`  errmsg: ${out.data?.errmsg ?? '-'}`)
+    // P0-6：API 明确失败（如 4126021 没绑手机）也要非 0 退出，
+    // 否则上层（daily/share-dynamic）会把「发失败」当成「发成功」静默记账 ✗
+    process.exit(6)
   }
-  process.exit(0)
 }
 
 if (mode === 'check') {

@@ -81,6 +81,19 @@ const TMP = accountBili('tmp')
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const today = () => new Date().toLocaleDateString('sv-SE')
 const UA = { 'user-agent': 'Mozilla/5.0', referer: 'https://www.bilibili.com/' }
+// 2026-11-16 修：view 接口不带登录态会被风控挡成 HTML（<!DOCTYPE…），daily 拿不到视频信息 ✗
+// 补 cookie + 完整 UA（与 debrief/comment 一致），让 viewOf 能过质量闸。
+const UA_VIEW = (() => {
+  const h = {
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    referer: 'https://www.bilibili.com/',
+  }
+  try {
+    const c = JSON.parse(fs.readFileSync(accountBili('credentials.json'), 'utf8'))
+    if (c.sessdata && c.bili_jct) h.cookie = `SESSDATA=${c.sessdata}; bili_jct=${c.bili_jct}; buvid3=${c.buvid3 ?? ''}`
+  } catch {}
+  return h
+})()
 
 const RAW = String(opt.text ?? '').trim()
 // 配置里明确为空 = 不加前缀；此时还要清掉模型可能带的旧默认前缀。
@@ -160,7 +173,9 @@ const LIMITS = {
 
 async function viewOf(bvid) {
   try {
-    const j = await (await fetch('https://api.bilibili.com/x/web-interface/view?bvid=' + bvid, { headers: UA })).json()
+    const j = await (await fetch('https://api.bilibili.com/x/web-interface/view?bvid=' + bvid, {
+      headers: { ...UA_VIEW, referer: `https://www.bilibili.com/video/${bvid}/` },
+    })).json()
     const d = j?.data
     if (!d) return null
     return {
