@@ -1,0 +1,8 @@
+{
+  "name": "surfcore-quickchat",
+  "private": true,
+  "description": "SurfCore quick-chat helper (runs on DSH's bundled Electron). uiohook-napi = push-to-talk key watch (observes, never blocks keys).",
+  "dependencies": {
+    "uiohook-napi": "1.5.5"
+  }
+}

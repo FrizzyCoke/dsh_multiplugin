@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>SurfCore 快捷对话</title>
+<style>
+  :root { --bg: rgba(24, 26, 32, 0.94); --fg: #eef1f6; --muted: #9aa3b2; --accent: #5aa9ff; --rec: #ff5a6a; --border: rgba(255,255,255,0.12); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: transparent; font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif; color: var(--fg); overflow: hidden; }
+  .box { margin: 8px; height: calc(100% - 16px); background: var(--bg); border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; box-shadow: 0 8px 28px rgba(0,0,0,0.45); -webkit-app-region: drag; }
+  .row { display: flex; gap: 8px; align-items: center; -webkit-app-region: no-drag; }
+  input[type=text] { flex: 1; font-size: 16px; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--border); background: rgba(255,255,255,0.06); color: var(--fg); outline: none; }
+  input[type=text]:focus { border-color: var(--accent); }
+  button { font-size: 14px; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--border); background: rgba(255,255,255,0.08); color: var(--fg); cursor: pointer; }
+  button.rec { background: var(--rec); border-color: var(--rec); }
+  label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .status { font-size: 13px; color: var(--muted); min-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; -webkit-app-region: no-drag; }
+  .status.err { color: #ff8a95; }
+  .status.reply { color: var(--fg); }
+  .hint { margin-left: auto; font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="row">
+    <input id="text" type="text" placeholder="跟她说点什么…（Enter 发送，Esc 收起）" maxlength="2000" autocomplete="off">
+    <button id="mic" title="点一下开始说话，再点一下发送">🎤</button>
+    <button id="send">发送</button>
+  </div>
+  <div class="row">
+    <label><input id="screen" type="checkbox"> 附截图（一起发给她看）</label>
+    <span class="hint">回答会出现在桌宠上</span>
+  </div>
+  <div id="status" class="status"></div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const textEl = $('text'), statusEl = $('status'), micBtn = $('mic'), screenEl = $('screen');
+let busy = false, recorder = null, hideTimer = null;
+
+function status(msg, kind) {
+  statusEl.textContent = msg || '';
+  statusEl.className = 'status' + (kind ? ' ' + kind : '');
+}
+function scheduleHide(ms) {
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => { if (!busy && !recorder) window.qc.hide(); }, ms);
+}
+
+async function send(text) {
+  const say = String(text || '').trim();
+  if (!say || busy) return;
+  busy = true;
+  clearTimeout(hideTimer);
+  status(screenEl.checked ? '截图并发送中…' : '发送中…');
+  try {
+    const r = await window.qc.send(say, screenEl.checked);
+    if (r && r.ok) {
+      textEl.value = '';
+      status(r.reply ? `她：${r.reply}` : '已发送', 'reply');
+      if (r.note) status(`${r.reply ? `她：${r.reply}` : '已发送'}（${r.note}）`, 'reply');
+      scheduleHide(6000);
+    } else {
+      status(`发送失败：${(r && (r.error || r.code)) || '未知错误'}${r && r.hint ? ' — ' + r.hint : ''}`, 'err');
+    }
+  } finally {
+    busy = false;
+  }
+}
+
+// ── 录音：16kHz 单声道 16 位 WAV（与 dsh-pet 自己的语音输入一致，DSH 识别认这个格式）──
+const RATE = 16000, MAX_MS = 120000;
+async function startRec() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
+  const ctx = new AudioContext({ sampleRate: RATE });
+  const source = ctx.createMediaStreamSource(stream);
+  const proc = ctx.createScriptProcessor(1024, 1, 1);
+  const chunks = []; let frames = 0; const max = RATE * MAX_MS / 1000;
+  proc.onaudioprocess = (e) => {
+    if (frames >= max) return;
+    const s = e.inputBuffer.getChannelData(0);
+    const take = s.length > max - frames ? s.subarray(0, max - frames) : s;
+    chunks.push(new Float32Array(take)); frames += take.length;
+  };
+  source.connect(proc); proc.connect(ctx.destination); await ctx.resume();
+  return {
+    async stop() {
+      await new Promise((r) => setTimeout(r, 80));
+      proc.onaudioprocess = null;
+      try { source.disconnect(); proc.disconnect(); } catch {}
+      stream.getTracks().forEach((t) => t.stop()); ctx.close();
+      if (!frames) return null;
+      const all = new Float32Array(frames); let off = 0;
+      for (const c of chunks) { all.set(c, off); off += c.length; }
+      const pcm = new Int16Array(all.length); let peak = 0;
+      for (let i = 0; i < all.length; i++) { const v = Math.max(-1, Math.min(1, all[i])); pcm[i] = v < 0 ? v * 32768 : v * 32767; peak = Math.max(peak, Math.abs(v)); }
+      const bytes = new Uint8Array(44 + pcm.length * 2); const dv = new DataView(bytes.buffer);
+      const w = (o, s) => { for (let i = 0; i < s.length; i++) bytes[o + i] = s.charCodeAt(i); };
+      w(0, 'RIFF'); dv.setUint32(4, 36 + pcm.length * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+      dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true); dv.setUint32(24, RATE, true);
+      dv.setUint32(28, RATE * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true); w(36, 'data'); dv.setUint32(40, pcm.length * 2, true);
+      for (let i = 0; i < pcm.length; i++) dv.setInt16(44 + i * 2, pcm[i], true);
+      let bin = ''; for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+      return { audio: btoa(bin), peak };
+    },
+  };
+}
+
+async function toggleMic() {
+  if (busy) return;
+  if (!recorder) {
+    try {
+      recorder = await startRec();
+      micBtn.classList.add('rec'); micBtn.textContent = '■';
+      status('在听…再点 ■ 发送');
+    } catch (e) {
+      recorder = null;
+      status(`开不了麦克风：${e && e.message ? e.message : e} — 检查 Windows 设置 → 隐私 → 麦克风`, 'err');
+    }
+    return;
+  }
+  const rec = recorder; recorder = null;
+  micBtn.classList.remove('rec'); micBtn.textContent = '🎤';
+  const out = await rec.stop();
+  if (!out || out.peak < 0.01) { status('没听到声音', 'err'); return; }
+  busy = true; status('识别中…');
+  try {
+    const r = await window.qc.hear(out.audio);
+    if (!r || !r.ok) { status(`识别失败：${(r && (r.error || r.code)) || '未知错误'}${r && r.hint ? ' — ' + r.hint : ''}`, 'err'); return; }
+    const said = String(r.text || '').trim();
+    if (!said) { status('没识别出内容，再说一次', 'err'); return; }
+    textEl.value = said;
+  } finally { busy = false; }
+  await send(textEl.value);
+}
+
+// ── 按住说话（不弹窗）：主进程旁听到「按住」→ start，「松开」→ stop。全程窗口不出现；
+// 只有出错（开不了麦 / 识别失败 / 发送失败）才把窗口弹出来显示原因。
+let pttRec = null, pttStarting = null, pttStopWanted = false;
+function pttFail(msg) { status(msg, 'err'); window.qc.showError(); }
+async function pttStart() {
+  if (pttRec || pttStarting || busy) return;
+  pttStopWanted = false;
+  pttStarting = startRec().then((r) => { pttRec = r; }).catch((e) => { pttFail(`开不了麦克风：${e && e.message ? e.message : e} — 检查 Windows 设置 → 隐私 → 麦克风`); });
+  await pttStarting;
+  pttStarting = null;
+  if (pttStopWanted) await pttStop();
+}
+async function pttStop() {
+  if (pttStarting) { pttStopWanted = true; return; }
+  const rec = pttRec; pttRec = null;
+  if (!rec) return;
+  const out = await rec.stop();
+  if (!out || out.peak < 0.01) return; // 没出声：当没按过
+  busy = true;
+  let said = '';
+  try {
+    const r = await window.qc.hear(out.audio);
+    if (!r || !r.ok) { pttFail(`识别失败：${(r && (r.error || r.code)) || '未知错误'}${r && r.hint ? ' — ' + r.hint : ''}`); return; }
+    said = String(r.text || '').trim();
+  } finally { busy = false; }
+  if (!said) return;
+  busy = true;
+  try {
+    const r = await window.qc.send(said, false);
+    if (!r || !r.ok) pttFail(`「${said}」没发出去：${(r && (r.error || r.code)) || '未知错误'}${r && r.hint ? ' — ' + r.hint : ''}`);
+  } finally { busy = false; }
+}
+window.qc.onPtt((phase) => { if (phase === 'start') pttStart(); else pttStop(); });
+
+textEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); send(textEl.value); }
+  if (e.key === 'Escape') { if (!recorder) window.qc.hide(); }
+});
+$('send').addEventListener('click', () => send(textEl.value));
+micBtn.addEventListener('click', () => toggleMic());
+window.qc.onMode((mode) => {
+  clearTimeout(hideTimer);
+  if (mode === 'error') return; // 保留错误文字
+  status(''); textEl.focus(); textEl.select();
+});
+window.qc.onBlur(() => { if (!busy && !recorder) window.qc.hide(); });
+</script>
+</body>
+</html>
