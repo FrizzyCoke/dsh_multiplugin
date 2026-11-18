@@ -6,6 +6,7 @@
 // 3. 80% 只提醒一次/天，而且**返回时就落盘**（DSH 重启不能重弹）；
 // 4. 额度文件坏掉时回落默认值，不能静默变成「不限」；
 // 5. 旧日期的用量文件不能被当成今天继续算。
+import './_pin-tz.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';

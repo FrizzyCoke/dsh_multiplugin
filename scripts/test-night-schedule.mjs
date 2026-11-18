@@ -1,5 +1,6 @@
 // 生物钟 C 模式：每窗至少 1 次、全天 ≤12、相邻至少 minGap、额外按质量分配。
 // 纯逻辑；不读写真实状态、不叫醒。
+import './_pin-tz.mjs';
 import assert from 'node:assert/strict';
 import {
   normalizeNightWindows, buildNightSchedule, nextPendingSlot, markScheduleSlot,

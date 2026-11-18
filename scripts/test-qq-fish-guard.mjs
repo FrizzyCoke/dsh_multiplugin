@@ -1,6 +1,7 @@
 // QQ 鱼群触发记录整理（给设置页）的离线回归。
 // 数据来自桥接写进 social-v2.json 的 fishGuardLog / fishGuard / lastFishGuard；
 // 这里只测纯函数，不碰真实状态。
+import './_pin-tz.mjs';
 import assert from 'node:assert/strict';
 import { summarizeQqFishGuard } from '../plugins/surfcore/lib/qq-fish-guard.js';
 import { appendFishGuardTrigger } from '../src/fish-guard.js';

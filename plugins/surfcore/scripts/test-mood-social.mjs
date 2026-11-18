@@ -175,51 +175,6 @@ await ok('方向解析 + 目标位置夹在屏幕内', () => {
   assert.equal(parseDirection(' Left '), 'left'); assert.equal(parseDirection('none'), null); assert.equal(parseDirection('往左'), null);
   assert.equal(targetX(0.6, 'left'), 0.35); assert.equal(targetX(0.1, 'left'), 0.05); assert.equal(targetX(0.9, 'right'), 0.95); assert.equal(targetX(0.2, 'center'), 0.5);
 });
-await ok('走过去：先打断当前动作 → 转向 + 用 dsh-pet 自带的走路真走（不另外平移）；远的分几步走到；没显示在桌面 → 带 code', async () => {
-  // 假宠物：收到走位动作就按朝向挪一段（跟 dsh-pet 的 tryMove 一样：方向 = facing）
-  const mk = (x0, { onDesktop = true, busy = false } = {}) => {
-    const calls = [];
-    let x = x0;
-    const m = createPetMove({
-      chat: {}, readConfig: () => ({}), currentDshUrl: () => 'http://dsh', pollMs: 0, leadWaitMs: 0,
-      fetchImpl: async (url, init) => {
-        const route = String(url).replace(/^.*\/dsh-pet-7340/, '').replace(/\?.*$/, '');
-        const body = init?.body ? JSON.parse(init.body) : undefined;
-        calls.push({ route, body });
-        if (route === '/pose') return { json: async () => (onDesktop ? { ok: true, x, y: 0.9 } : { ok: false, reason: 'pet-not-displayed', message: '没显示' }) };
-        if (route === '/anim') {
-          if (busy) return { json: async () => ({ ok: false, reason: 'busy' }) };
-          const step = body.name === '原地左转奔跑' ? 0.2 : 0.1;
-          x = Math.max(0.05, Math.min(0.95, x + (body.facing === 'left' ? -step : step)));
-        }
-        return { json: async () => ({ ok: true }) };
-      },
-    });
-    return { m, calls, posX: () => x };
-  };
-  const a = mk(0.6);
-  const r = await a.m.move('main', 'left');
-  assert.equal(r.ok, true); assert.equal(r.facing, 'left'); assert.equal(r.steps, 1);
-  const routes = a.calls.map((c) => c.route);
-  assert.deepEqual(routes.slice(0, 3), ['/pose', '/position', '/anim'], '先读位置 → 原地打断 → 走');
-  assert.equal(a.calls[1].body.mode, 'instant'); assert.equal(a.calls[1].body.x, 0.6, '打断时不挪位置');
-  assert.equal(a.calls[2].body.name, '螃蟹走路'); assert.equal(a.calls[2].body.facing, 'left');
-  assert.equal(a.calls.filter((c) => c.route === '/position').length, 1, '不再另外平移');
-  assert.ok(a.posX() < 0.6);
-  const c = mk(0.1);
-  const rc = await c.m.move('main', 'center');
-  assert.ok(rc.steps >= 2, `远的分几步：${rc.steps}`); assert.ok(Math.abs(c.posX() - 0.5) <= 0.1, `走到中间附近：${c.posX()}`);
-  assert.ok(c.calls.filter((x) => x.route === '/anim').every((x) => x.body.facing === 'right'));
-  const o = mk(0.8);
-  const ro = await o.m.move('main', 'otherside');
-  assert.equal(ro.facing, 'left'); assert.equal(o.calls.find((x) => x.route === '/anim').body.name, '原地左转奔跑', '往那边：跑');
-  const off = mk(0.5, { onDesktop: false });
-  const n = await off.m.move('main', 'left');
-  assert.equal(n.ok, false); assert.equal(n.code, 'petmove.no-desktop'); assert.deepEqual(off.calls.map((x) => x.route), ['/pose']);
-  const b = mk(0.5, { busy: true });
-  const nb = await b.m.move('main', 'left');
-  assert.equal(nb.ok, false); assert.equal(nb.code, 'petmove.rejected');
-});
 await ok('桌宠对话的语气：同一次判断给出「挪不挪 + 语气」，怪她 → 交给心情；不挪的照样算语气', async () => {
   const { parseTone, TONES } = await import('../lib/pet-move.js');
   assert.equal(parseTone('blame'), 'blame'); assert.equal(parseTone('??'), 'neutral');
@@ -231,8 +186,7 @@ await ok('桌宠对话的语气：同一次判断给出「挪不挪 + 语气」�
     readConfig: () => ({ enabled: true }), currentDshUrl: () => '',
     toneEnabled: () => true, onTone: (tone, delta, text) => tones.push({ tone, delta, text }),
   });
-  m.onUserMessage('你真笨');
-  await new Promise((r) => setTimeout(r, 30));
+  await m.decide('你真笨');
   assert.equal(calls, 1, '只调一次'); assert.deepEqual(tones, [{ tone: 'blame', delta: -1, text: '你真笨' }]);
 });
 await ok('挪位置关了、语气开着：照样判断语气，但不会走', async () => {
@@ -243,8 +197,7 @@ await ok('挪位置关了、语气开着：照样判断语气，但不会走', a
     fetchImpl: async (u) => { fetched.push(String(u)); return { json: async () => ({ ok: true }) }; },
     toneEnabled: () => true, onTone: (tone) => tones.push(tone),
   });
-  m.onUserMessage('往左走哈哈哈');
-  await new Promise((r) => setTimeout(r, 30));
+  await m.decide('往左走哈哈哈');
   assert.deepEqual(tones, ['funny']); assert.equal(fetched.length, 0);
 });
 await ok('decide：回话前判断 + 只转身（不发任何位移）；近的走、往那边跑；已经朝对了就不转', async () => {
@@ -313,8 +266,7 @@ await ok('她回完话（capture）才走：发 dsh-pet 自带的走位动作 + 
 await ok('关掉就不判断（不花 token）', async () => {
   let asked = 0;
   const m = createPetMove({ chat: { complete: async () => { asked += 1; return { text: 'none' }; } }, readConfig: () => ({ enabled: false }), currentDshUrl: () => '' });
-  m.onUserMessage('往左走');
-  await new Promise((r) => setTimeout(r, 20));
+  assert.equal((await m.decide('往左走')).action, null);
   assert.equal(asked, 0);
 });
 

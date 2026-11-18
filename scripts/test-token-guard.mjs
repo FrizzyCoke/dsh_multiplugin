@@ -1,4 +1,5 @@
 // Token 防爆破纯逻辑回归（不启桥接、不发 QQ）。
+import './_pin-tz.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';

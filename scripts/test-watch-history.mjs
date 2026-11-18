@@ -1,5 +1,6 @@
 // B站「观看历史」离线回归：追加 / 去重 / 轮转 / 旧记忆回填 / 评分合并 / 查询。
 // 不联网、不碰真实 ~/.dsh 状态（全部用临时目录）。
+import './_pin-tz.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
