@@ -152,6 +152,7 @@ export function createDshPetBridge({ ctx, chat, readConfig, currentDshUrl, dshPe
     const recallStart = Date.now();
     let movePromise = null;
     try { movePromise = onMoveIntent ? Promise.resolve(onMoveIntent(String(userText ?? ''), String(petId))).catch(() => null) : null; } catch {}
+    if (movePromise) pendingMoves.set(String(petId), movePromise);
     const skipScreen = takeSuppressed(userText);
     try {
       const decision = skipScreen ? null : onUserMessage?.(String(userText ?? ''), { onAnswer: (answer) => recordReply(String(petId), answer) });
@@ -168,14 +169,41 @@ export function createDshPetBridge({ ctx, chat, readConfig, currentDshUrl, dshPe
     if (movePromise) {
       const decided = await Promise.race([movePromise, new Promise((resolve) => { const t = setTimeout(() => resolve(null), Math.max(0, 1300 - (Date.now() - recallStart))); t.unref?.(); })]);
       if (decided?.action) {
-        moveHint = `\n\n【挪位置】他让你挪地方，你已经转过身准备走了。只回一两个字表示收到，比如「好」「行」「ok」「嗯」，**别复述他说的方向或内容**；回复最后一行写 [动作:${decided.action}]（就是你走过去的动作，必须写）。`;
+        moveHint = `\n\n【这一句】他让你挪个地方，你回完就会走过去。只回一两个字：「好」「行」「ok」「嗯」，**不许带方向、不许复述**（不说「行，往左」「来了，往右挪」）；这句不用写 [动作]，走路你回完自然会走。`;
       }
     }
-    return { system: `${base}${extra ? `\n\n${extra}` : ''}${moveHint}\n\n【桌宠环境（dsh-pet 动画桌宠）】\n${String(system ?? '').trim()}` };
+    // 2026-11-18：她老复述他的话（「行，往左」「往右挪点，来了」）—— 每句都提醒，放在最后（最后读到的最管用）
+    const echoRule = '\n\n【说话】直接接他的话，**别把他刚说的复述一遍**。他说「往左走」→「好」；他说「没饭」→「点外卖啊」，不是「没饭？」。';
+    return { system: `${base}\n\n【桌宠环境（dsh-pet 动画桌宠）】\n${String(system ?? '').trim()}${extra ? `\n\n${extra}` : ''}${moveHint}${echoRule}` };
+  }
+
+  // 2026-11-18：她回话末尾的动作常常不听话（历史里全是「悠闲哼歌」，她照抄）→ 不靠她选：
+  // recall 时判断好的走位，在她回完话之后（dsh-pet 先写了她自己的动作，capture 在那之后才跑）
+  // 发 dsh-pet 自带的走位动作 + 朝向，它的 tryMove 会接管、真走。
+  const pendingMoves = new Map();
+  async function walkAfterReply(petId) {
+    const p = pendingMoves.get(petId);
+    pendingMoves.delete(petId);
+    if (!p) return;
+    let d = null;
+    try { d = await p; } catch {}
+    if (!d?.action) return;
+    const base = String(currentDshUrl() || '').replace(/\/+$/, '');
+    try {
+      const res = await fetch(`${base}${ROUTE}/anim?pet=${encodeURIComponent(petId)}&surface=any`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: d.action, ...(d.facing ? { facing: d.facing } : {}) }), signal: AbortSignal.timeout(5000),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (body?.ok !== true) fail('dsh-pet-bridge.walk-rejected', `${d.action} ${body?.reason ?? ''} ${body?.message ?? ''}`.trim());
+    } catch (error) {
+      fail('dsh-pet-bridge.walk-failed', String(error?.message ?? error).slice(0, 120));
+    }
   }
 
   async function capture({ petId, userText, replyText, ts } = {}) {
     const c = cfg();
+    if (c.enabled && c.petIds.includes(String(petId))) void walkAfterReply(String(petId));
     if (!c.enabled || !c.remember || !c.petIds.includes(String(petId))) return;
     const written = chat.rememberTurn({ userText, replyText, at: Number(ts) || Date.now() });
     if (written > 0) lastCaptureAt = Date.now();

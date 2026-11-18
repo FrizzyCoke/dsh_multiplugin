@@ -149,9 +149,9 @@ export function createPetMove({ chat, readConfig, currentDshUrl, pluginLog = () 
       // 「往左 / 往右」走；「往那边去 / 走开点」跑；「到中间 / 到边上」远就跑、近就走
       const action = dir === 'otherside' ? RUN_ANIM : (dir === 'left' || dir === 'right') ? WALK_ANIM : (Math.abs(target - from) > 0.2 ? RUN_ANIM : WALK_ANIM);
       // 只转身：播一下原地待机并带上朝向（dsh-pet 的 /anim 会先设 facing 再播）；走由她回话的 [动作] 触发
-      if (pose.facing !== facing) await call('/anim', q, { name: IDLE_ANIM, facing });
+      // 不在回话前转身（她回话的动作会把它盖掉）：等她回完，联动在 capture 里发走位动作 + 朝向（dsh-pet 自带的 tryMove 真走）
       last = { ...last, ok: true, facing, action };
-      pluginLog(`[pet-move] 「${last.text}」→ ${dir}：转向 ${facing}，让她回话带 [动作:${action}]（dsh-pet 自己走）`);
+      pluginLog(`[pet-move] 「${last.text}」→ ${dir}：她回完话就朝 ${facing} 走（[动作:${action}]，dsh-pet 自带的走路）`);
       return { dir, action, facing, tone };
     } catch (error) {
       last = { ...last, ok: false, error: `petmove.failed: ${String(error?.message ?? error).slice(0, 120)}` };

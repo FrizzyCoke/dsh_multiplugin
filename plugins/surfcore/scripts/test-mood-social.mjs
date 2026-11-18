@@ -263,12 +263,11 @@ await ok('decide：回话前判断 + 只转身（不发任何位移）；近的�
   const a = mk({ ok: true, x: 0.6, y: 0.9, facing: 'right' }, 'left neutral');
   const d = await a.m.decide('往左走');
   assert.deepEqual([d.dir, d.facing, d.action], ['left', 'left', '螃蟹走路']);
-  assert.deepEqual(a.calls.map((c) => c.route), ['/pose', '/anim'], '只读位置 + 转身');
-  assert.equal(a.calls[1].body.name, '待机呼吸休闲'); assert.equal(a.calls[1].body.facing, 'left');
+  assert.deepEqual(a.calls.map((c) => c.route), ['/pose'], '回话前只读位置（转身 + 走在她回完话之后）');
   assert.equal(a.calls.some((c) => c.route === '/position'), false, '插件不发位移');
   const b = mk({ ok: true, x: 0.2, y: 0.9, facing: 'right' }, 'otherside neutral');
   const db = await b.m.decide('走开点');
-  assert.equal(db.action, '原地左转奔跑'); assert.equal(db.facing, 'right'); assert.deepEqual(b.calls.map((c) => c.route), ['/pose'], '已经朝右：不用转');
+  assert.equal(db.action, '原地左转奔跑'); assert.equal(db.facing, 'right'); assert.deepEqual(b.calls.map((c) => c.route), ['/pose']);
   const c = mk({ ok: true, x: 0.5, y: 0.9, facing: 'left' }, 'none funny');
   const dc = await c.m.decide('哈哈哈');
   assert.equal(dc.action, null); assert.equal(dc.tone, 'funny'); assert.equal(c.calls.length, 0);
@@ -281,12 +280,35 @@ await ok('联动 recall：要挪 → 让她只回一两个字、别复述，并�
     onMoveIntent: () => new Promise((r) => setTimeout(() => r(decision), delayMs)),
   });
   const moved = await mkBridge({ dir: 'left', action: '螃蟹走路', facing: 'left' }).recall({ petId: 'main', system: 'S', userText: '往左走' });
-  assert.match(moved.system, /\[动作:螃蟹走路\]/); assert.match(moved.system, /别复述/);
+  assert.match(moved.system, /不许带方向、不许复述/); assert.match(moved.system, /别把他刚说的复述/);
   const plain = await mkBridge({ dir: null, action: null }).recall({ petId: 'main', system: 'S', userText: '在吗' });
-  assert.doesNotMatch(plain.system, /挪位置/);
+  assert.doesNotMatch(plain.system, /挪个地方/); assert.match(plain.system, /别把他刚说的复述/);
   const t0 = Date.now();
   const slow = await mkBridge({ dir: 'left', action: '螃蟹走路' }, 3000).recall({ petId: 'main', system: 'S', userText: '往左走' });
-  assert.ok(Date.now() - t0 < 1500, '判断太慢也不拖过 dsh-pet 的 1.5 秒'); assert.doesNotMatch(slow.system, /挪位置/);
+  assert.ok(Date.now() - t0 < 1500, '判断太慢也不拖过 dsh-pet 的 1.5 秒'); assert.doesNotMatch(slow.system, /挪个地方/);
+});
+await ok('她回完话（capture）才走：发 dsh-pet 自带的走位动作 + 朝向，盖掉她自己挑的动作', async () => {
+  const { createDshPetBridge } = await import('../lib/dsh-pet-bridge.js');
+  const sent = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (u, init) => { sent.push({ u: String(u), body: init?.body ? JSON.parse(init.body) : null }); return { json: async () => ({ ok: true }) }; };
+  try {
+    const br = createDshPetBridge({
+      ctx: {}, chat: { systemPromptForFrontend: () => 'BASE', rememberTurn: () => 0 },
+      readConfig: () => ({ enabled: true }), currentDshUrl: () => 'http://dsh', dshPetUserRoot: tmp,
+      onMoveIntent: async () => ({ dir: 'left', action: '螃蟹走路', facing: 'left' }),
+    });
+    await br.recall({ petId: 'main', system: 'S', userText: '往左走' });
+    assert.equal(sent.filter((s) => s.u.includes('/anim')).length, 0, '回话前不动');
+    await br.capture({ petId: 'main', userText: '往左走', replyText: '好' });
+    await new Promise((r) => setTimeout(r, 50));
+    const walk = sent.find((s) => s.u.includes('/anim'));
+    assert.deepEqual(walk.body, { name: '螃蟹走路', facing: 'left' });
+    sent.length = 0;
+    await br.capture({ petId: 'main', userText: '在吗', replyText: '在' });
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(sent.length, 0, '没让挪就不走、也不重复上一回');
+  } finally { globalThis.fetch = realFetch; }
 });
 await ok('关掉就不判断（不花 token）', async () => {
   let asked = 0;
