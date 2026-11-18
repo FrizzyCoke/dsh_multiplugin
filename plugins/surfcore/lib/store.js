@@ -21,10 +21,12 @@ import { DEFAULT_LIMITS, normalizeLimits } from '../tools/lib/limits.mjs';
 import { dynamicDefaults, normalizeDynamics } from '../tools/lib/kinds.mjs';
 import { DEFAULT_QQ_FISH_GUARD, normalizeQqFishGuard } from '../../../src/fish-guard.js';
 import { adminFromSources, normalizeAdmin } from '../../../src/admin-identity.js';
-import { DEFAULT_MEMORY_CARD_CONFIG, normalizeMemoryCardConfig } from '../../../src/memory-card.js?rev=20261025-pet-memory2';
+import { DEFAULT_MEMORY_CARD_CONFIG, normalizeMemoryCardConfig } from '../../../src/memory-card.js?rev=20261117-screen-memory';
 import { DEFAULT_VECTOR_MEMORY_CONFIG, normalizeVectorMemoryConfig } from '../../../src/vector-memory.js';
 import { normalizeCardMode } from '../../../src/share-mode.js';
 import { normalizeClockText, normalizeWindow } from '../tools/lib/time-window.mjs';
+import { normalizeEnergy, windowExtras } from '../tools/lib/night-schedule.mjs';
+import { normalizeMoodConfig } from '../tools/lib/mood.mjs';
 
 export const MASK = '********';
 
@@ -163,6 +165,59 @@ export const DEFAULT_UNIFIED = {
     // 默认指向官方 Release 的 latest 直链（无 API 限流）；自建发布源就改这里。
     pet: { versionUrl: 'https://github.com/Mieksido/surfpet/releases/latest/download/version.json' },
     voice: { localVersionUrl: '', cloudVersionUrl: '' },
+  },
+  // dsh-pet 联动（lib/dsh-pet-bridge.js）：dsh-pet 的对话走 SurfCore 人格+记忆，主动搭话也弹在它身上。
+  // 默认开（没装 dsh-pet 时什么都不做）；关掉 = 两只桌宠都回到各自原样（dsh-pet 30 秒内回到它自己的大脑）。
+  dshPetBridge: {
+    enabled: true,
+    brain: true,
+    remember: true,
+    mirrorProactive: true,
+    petIds: ['main'],
+    bubbleMs: 8000,
+  },
+  // 快捷对话（lib/quick-chat.js）：系统级快捷键弹一个置顶小输入框，游戏里也能用。
+  // 快捷键是 Electron 写法（Ctrl/Alt/Shift + 键）；注册后其它程序就收不到这个组合了。
+  quickChat: {
+    enabled: true,
+    chatHotkey: 'Alt+N',  // 打开/收起对话框
+    micHotkey: 'T',   // 按住说话（不弹窗），松开发送；只旁听不吞键，T 照样能打字
+    speechProvider: 'deepseek', // 语音识别：deepseek（用 DSH 里的 DeepSeek key）/ dsh（DSH 语音插件）
+    petId: 'main',
+  },
+  // 一天的回顾（lib/daily-recap.js）：每天本机时间到 at 后，在桌宠上随口说一句今天在 B站 刷到啥；一天一次，没刷就不说。
+  dailyRecap: { enabled: true, at: '22:30' },
+  // 桌宠听话挪位置（lib/pet-move.js）：「往左走」「过来」她真的走过去；每条桌宠消息多一次很小的判断。
+  petMove: { enabled: true },
+  // 截图自动清理（lib/attachment-gc.js）：只清 SurfCore 自己存进 DSH 附件的截图；超过 maxAgeDays 天或总量超过 maxMB 就删。
+  attachmentGc: { enabled: true, maxAgeDays: 2, maxMB: 50 },
+  // 产生的文件统一封顶（lib/housekeeping.js）：日志截尾、日记旧的挪档案、快照留 7 个、备份留 40 个/14 天。
+  housekeeping: { enabled: true },
+  // 桌宠的生活（lib/pet-life.js）：心情上脸、跟着作息睡觉、她在 B站 评论/分享时有反应。不调模型。
+  petLife: { enabled: true, moodAnims: true, sleepWithSchedule: true, biliReactions: true, bubbleOnShare: true },
+  // 看屏幕（lib/screen-watch.js）：她自己决定多久看一眼、说不说、记不记；截图走已装的 Windows-MCP。
+  // 聊天里要不要看屏幕也由她自己决定（look_at_screen 工具）。这里只是上下限和安全/省钱的护栏。
+  screenWatch: {
+    enabled: false,
+    minIntervalSec: 15,       // 她最快多久看一眼
+    maxIntervalSec: 600,      // 她最慢多久看一眼
+    firstIntervalSec: 30,     // 第一眼 / 她没给节奏时
+    chattiness: 'normal',     // quiet / normal / chatty
+    maxCommentsPerHour: 6,    // 每小时最多主动说几句
+    commentCooldownSec: 180,  // 两句之间至少隔多久
+    maxLooksPerHour: 60,      // 每小时最多看几眼（省钱）
+    changeThreshold: 0.04,    // 画面变化小于这个就不看（0~1）
+    watchApps: [],            // 只看标题含这些词的窗口；空 = 都看
+    ignoreApps: ['微信', 'WeChat', 'Weixin', 'Telegram', 'WhatsApp', 'Signal', '1Password', 'Bitwarden', 'KeePass', '密码', 'Password', '银行', 'Bank', '支付宝', 'Alipay', '钉钉', 'Outlook', 'Gmail', 'Mail'],
+    skipIfChattedSec: 20,     // 刚聊过天就先不看
+    onDemand: true,           // 聊天里问「看看屏幕/这是哪」时现截一张
+    rememberNotable: true,    // 值得记的时刻写进记忆卡
+    minMemoryImportance: 55,
+    notesInPrompt: 5,         // 聊天时带上最近几次看到的
+    noteMaxAgeMin: 30,
+    scale: 0.5,               // 截图缩放（0.5 ≈ 1280 宽）
+    effort: 'low',            // 看图时的思考强度
+    windowsMcpExe: '',        // 留空自动找
   },
 };
 
@@ -515,7 +570,8 @@ export function normalizeBiliWindowList(windows) {
       warnings.push(`作息窗口已忽略：${normalized.error}（${start || '空'} – ${end || '空'}）`);
       continue;
     }
-    out.push({ start, end, wakes: normalized.wakes });
+    // 每个窗口可选的作息性格（不看概率 / 每趟条数 / 不看=睡着），保存时别丢（见 tools/lib/night-schedule.mjs windowExtras）。
+    out.push({ start, end, wakes: normalized.wakes, ...windowExtras(raw) });
   }
   if (!out.length) out.push({ start: '20:00', end: '24:00', wakes: 1 });
   return { windows: out, warnings };
@@ -531,6 +587,18 @@ export function normalizeBiliConfig(input) {
     cfg.night.windows.reduce((sum, w) => sum + (Number(w.wakes) || 1), 0),
     0, 12, { integer: true },
   );
+  // 2026-11-18 用户定：周末单独一套作息（周六、周日用；没开就照平时）。全天上限 maxWakesPerDay 周末同样生效。
+  if (cfg.night.weekend !== undefined) {
+    const wk = isPlainObject(cfg.night.weekend) ? cfg.night.weekend : {};
+    cfg.night.weekend = {
+      enabled: wk.enabled === true,
+      windows: normalizeBiliWindowList(Array.isArray(wk.windows) && wk.windows.length ? wk.windows : cfg.night.windows).windows,
+    };
+  }
+  // 2026-11-18：精力/心情（刷久了会累：更容易不刷、刷得少）。
+  cfg.night.energy = normalizeEnergy(cfg.night.energy);
+  // 2026-11-18：心情（视频内容 / 他私信的内容 / 他回不回 → 影响刷多少、主动找他多少；见 tools/lib/mood.mjs）。
+  cfg.mood = normalizeMoodConfig(cfg.mood);
   cfg.night.skipChance = finiteNumber(cfg.night.skipChance, 0.3, 0, 0.95);
   cfg.night.maxVideos = finiteNumber(cfg.night.maxVideos, 5, 1, 20, { integer: true });
   cfg.night.minGapMin = finiteNumber(cfg.night.minGapMin, 20, 0, 120, { integer: true });
@@ -546,6 +614,9 @@ export function normalizeBiliConfig(input) {
   cfg.share.minScore = finiteNumber(cfg.share.minScore, 13, 0, 20, { integer: true });
   cfg.share.silentAfterDays = finiteNumber(cfg.share.silentAfterDays, 3, 0, 60, { integer: true });
   cfg.share.decayPerDay = finiteNumber(cfg.share.decayPerDay, 1, 0, 10, { integer: true });
+  // 2026-11-18 用户定：via=dm 时也在视频下发一条普通评论；闲聊私信每天几句（0 = 关）。
+  cfg.share.alsoComment = cfg.share.alsoComment === true;
+  cfg.share.chatDaily = finiteNumber(cfg.share.chatDaily, 0, 0, 50, { integer: true });
   cfg.listen = isPlainObject(cfg.listen) ? cfg.listen : {};
   cfg.listen.commentIntervalSec = finiteNumber(cfg.listen.commentIntervalSec, 300, 60, 86_400, { integer: true });
   cfg.listen.dmScope = cfg.listen.dmScope === 'all' ? 'all' : 'owner';

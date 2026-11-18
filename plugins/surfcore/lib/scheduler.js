@@ -22,6 +22,11 @@ import { execFile } from 'node:child_process'
 // 收件箱读取复用工具链的实现（避免在插件里再抄一份 B站 接口 ✓）
 import { pullFeed, makeHeaders } from '../tools/lib/msgfeed.mjs'
 import { kindsNow, dynamicsEnabled, dynamicsGapMin, slotOf, CATCHUP_DAY } from '../tools/lib/kinds.mjs'
+import { exploreSummary, exploreSummaryLines, readExploreLog } from '../tools/lib/explore.mjs'
+import { loadScores } from '../tools/lib/scores.mjs'
+import { chatCapFor, checkIgnored, decayedMood, moodGuidance, ownerReplied, readMood, writeMood } from '../tools/lib/mood.mjs'
+import { effectiveMinScore, ownerLines, reactionLines } from '../tools/lib/owner-taste.mjs'
+import { dueLines, readDates } from '../tools/lib/dates.mjs'
 import { freeLimits } from '../tools/lib/limits.mjs'
 import { config } from '../tools/lib/config.mjs'
 import { pendingCount as attackPending } from '../tools/lib/attacks.mjs'
@@ -303,7 +308,117 @@ function diaryPushLines() {
        "   （2026-10-18 主人定：推**日记内容**，不只是流水账 ✓ 它读设置页「消息推送」的配置）"]
 }
 
-function wakePrompt(st, tools = '') {
+/** 精力/心情（2026-11-18）：只影响她刷多少、说话的劲头；明确告诉她别说出来（不然又是「我有点累了哦」的 AI 味）。 */
+export function moodLines(st, moodValue = currentMood()) {
+  const lines = []
+  const mv = Number(moodValue) || 0
+  if (mv !== 0) {
+    const g = moodGuidance(mv)
+    lines.push(`【你现在的心情】${mv}（${g.label}）—— ${g.how}。别说出来；不爽也不许去找他抱怨。刷到好的 / 烂的会影响你心情（score 时自动记）。`)
+  }
+  const e = Number(st?.energy)
+  if (!Number.isFinite(e) || !st?.mood) return lines
+  return [...lines, ...energyLine(st, e)]
+}
+
+/** 今天 / 明天是他说过的日子（读不到就不加）。 */
+export function dueLinesNow({ dir = platformDir(), now = new Date() } = {}) {
+  try { return dueLines(readDates(path.join(dir, 'dates.json')), now) } catch { return [] }
+}
+
+/** 现在的分享门槛（跟着他对分享的反应走）。 */
+export function shareLine(B, { dir = platformDir() } = {}) {
+  try { return effectiveMinScore(Number(B?.share?.minScore ?? 13), readMood(path.join(dir, 'mood.json'))).minScore } catch { return Number(B?.share?.minScore ?? 13) }
+}
+
+/** 他最近自己在看的 + 他对分享的反应（读不到就不加）。 */
+export function ownerTasteLines(B, { dir = platformDir() } = {}) {
+  try {
+    const mood = readMood(path.join(dir, 'mood.json'))
+    return [
+      ...ownerLines(path.join(dir, 'owner-history.json')),
+      ...reactionLines(mood, loadScores(), Number(B?.share?.minScore ?? 13)),
+    ]
+  } catch { return [] }
+}
+
+/** 当前心情（回落后）；读不到就 0。 */
+export function currentMood() {
+  try { return decayedMood(readMood(path.join(platformDir(), 'mood.json')), Date.now(), config().mood ?? {}) } catch { return 0 }
+}
+
+function energyLine(st, e) {
+  const how = {
+    来劲: '劲头足：可以多刷几条、多说两句',
+    正常: '照常刷',
+    有点累: '有点乏：刷快点、话少点，评论短一点',
+    累瘫: '很累：少刷，看两条就收工，能不说就不说',
+  }[st.mood] || '照常刷'
+  return [`【你现在的状态】精力 ${e}/100（${st.mood}）—— ${how}。这只影响你怎么刷、说话的劲头，**别把累不累说出来**。`]
+}
+
+/**
+ * 他私信里发的视频（BV 号，或 b23.tv 短链跟一次跳转）→ 还没一起看过的 BV（最多 2 个，记进 watched-together.json 去重）。
+ */
+export async function newWatchTogether(text, { file = path.join(platformDir(), 'watched-together.json'), fetchImpl = (...a) => fetch(...a) } = {}) {
+  const found = new Set(String(text ?? '').match(/BV[0-9A-Za-z]{10}/g) ?? [])
+  for (const m of String(text ?? '').matchAll(/b23\.tv\/([A-Za-z0-9]+)/g)) {
+    try {
+      const r = await fetchImpl(`https://b23.tv/${m[1]}`, { redirect: 'manual', signal: AbortSignal.timeout(6000) })
+      const bv = String(r.headers?.get?.('location') ?? '').match(/BV[0-9A-Za-z]{10}/)
+      if (bv) found.add(bv[0])
+    } catch { /* 短链解析不了就算了 */ }
+  }
+  let seen = {}
+  try { seen = JSON.parse(fs.readFileSync(file, 'utf8')).seen ?? {} } catch {}
+  const fresh = [...found].filter((bv) => !seen[bv]).slice(0, 2)
+  if (fresh.length) {
+    for (const bv of fresh) seen[bv] = new Date().toISOString()
+    const keep = Object.fromEntries(Object.entries(seen).sort((a, b) => String(b[1]).localeCompare(String(a[1]))).slice(0, 200))
+    try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, `${JSON.stringify({ seen: keep }, null, 2)}\n`) } catch {}
+  }
+  return fresh
+}
+
+/** 主人私信时多给她的一段：现在的心情、判断他这句、一起看他发的视频、你们的梗。 */
+export function ownerDmLines({ moodValue = 0, bvids = [], minScore = 13 } = {}) {
+  const g = moodGuidance(moodValue)
+  return [
+    `【你现在的心情】${moodValue}（${g.label}）—— ${g.how}。心情只体现在你怎么说话，**别说出来**；不爽也**不许**抱怨"你怎么不理我"、追问为什么不回。`,
+    '【先感觉一下他这句】真把你逗笑了 / 暖到你 → `mood note --delta 1`（特别好笑 2）`--why "他说的啥"`；冲你 / 敷衍你 → `--delta -1`；普通的话不用记。',
+    '   他逗到你了就回得带劲点，想接着聊可以多回一两句（还是在私信上限里）。',
+    ...bvids.flatMap((bv) => [
+      `🎬 **他发了视频 ${bv}，一起看**：\`debrief ${bv} --no-frames\` 看懂 → \`score ${bv} --score N --reason "…"\` → 用 --reply 回他你真实的反应（像一起刷到的，不是写影评）。`,
+      `   想说哪一段最好笑：**只用 debrief 里弹幕热区 / 字幕给出的时间**，写成「3:42 那段」并带链接 https://www.bilibili.com/video/${bv}/?t=秒数；debrief 里没有时间就别编。`,
+    ]),
+    '【你们的梗】`joke list` 看；偶尔顺嘴用一个（`joke use --id N`，一天最多一个）。他这句要是成了你们之间的新梗 → `joke add --text "梗" --source dm`。',
+    '【日子】他提到具体哪天的事（生日、考试、面试、出去玩）→ `dates add --when 2026-12-03 --what "他考试"`（生日这种每年的用 `--when 03-15`）；没说哪天就别记。',
+    ...dueLinesNow(),
+  ]
+}
+
+/** 最近几次「出去逛」的战绩（逛了啥、推了几条、平均几分），给她决定接着挖还是换方向。读不到就当没逛过。 */
+export function exploreLines(B, { file = path.join(platformDir(), 'explore-log.json'), scores = null } = {}) {
+  try {
+    const lines = exploreSummaryLines(exploreSummary(readExploreLog(file), scores ?? loadScores()), Number(B?.share?.minScore ?? 13))
+    return lines.length ? lines.map((l) => `   ${l}`) : ['     （还没出去逛过）']
+  } catch {
+    return ['     （还没出去逛过）']
+  }
+}
+
+/** 这一趟初筛几条：计划里带的（按作息窗口）→ 全局 night.maxVideos → 5。 */
+export function videosOf(st) {
+  const n = Number(st?.maxVideos)
+  return Number.isFinite(n) && n >= 1 ? Math.min(30, Math.round(n)) : 5
+}
+/** 深读几条：初筛的三分之一左右，2~6 条。 */
+export function deepOf(st) {
+  const n = Math.max(2, Math.min(6, Math.round(videosOf(st) / 3)))
+  return n <= 2 ? '2–3' : String(n)
+}
+
+export function wakePrompt(st, tools = '') {
   const L = limitsNow()
   const B = config()
   const K = kindsNow(B)
@@ -314,6 +429,8 @@ function wakePrompt(st, tools = '') {
   const biliDir = platformDir()
   return [
     `【生物钟】你醒了 —— ${st.atText ?? ''}${st.window ? `（窗口 ${st.window}${st.withinWindow ? ' · ' + st.withinWindow : ''}）` : ''}。`,
+    ...moodLines(st),
+    ...dueLinesNow(),
     '',
     ...(identity.length ? [...identity, ''] : []),
     // 2026-10-20：她的会话 cwd 是**用户主目录**，那里没有 bili.mjs ✗
@@ -337,16 +454,22 @@ function wakePrompt(st, tools = '') {
     ...(SILENT
       ? ['⛔ **沉默逛 B 站已开启：本轮只看不说。** 只做 deps / feed / debrief / score / 日记；禁止评论、回复、搭话、发动态、分享、私信、弹幕；不要调用 comment / daily / share-dynamic / dynamic / dm / danmaku 的 --go。']
       : ['⭐ **本轮硬规则（2026-10-23 主人定）：至少发一条主动评论（见 4.7）；鱼群泛滥时强制聚拢，不许以“没有可聚拢鱼楼”跳过；额度/冷却满了除外。**']),
-    '1) `node bili.mjs deps` —— 体检红着就报备我、只做读、别对外发',
+    '1) `node bili.mjs deps` —— 有 ✗（必需项坏了）才报备我、只做读、别对外发；只有 ⚠（比如缺 ffmpeg）照常刷照常说，深读用 `--no-frames`，别为这个报备',
     `2) 读两本日记（\`${path.join(biliDir, 'whale-diary.md')}\` + \`${path.join(biliDir, 'whale-diary-private.md')}\`）`,
     // 2026-10-20：feed 已默认多源（搜索+热门+排行+关注）+ 去播放量偏向 + 偏好命中权重 ✓
     // 2026-10-23：feed 改成按「口味权重」分名额 + 排除观看历史/最近推过的 + 搜索页轮换。
-    '3) `feed` 选题（≤5 条）→ 对这 5 条跑 `debrief --no-frames`',
+    // 2026-11-18：条数跟着这一趟的作息走（白天窗口刷得多、夜里少）；以前写死 5 条，night.maxVideos 从没生效。
+    // 2026-11-18：「出去逛」—— 方向由她按记忆自己定（不是写死的规则），代码只管上限、不爱看的拒、记战绩。
+    '2.5) 🧭 **今天想往哪儿逛**：翻完日记想一下 —— 最近刷到啥对胃口、日记里提过想再看的、他跟你聊过的（B站这边的）→',
+    '     自己定 0~2 个**具体**的方向词（比如某个梗、某个 UP 的系列、某类整活，不是"游戏""动漫"这种大类），跟他不爱看的沾边的会被拒；',
+    '     不想换就不加。上次逛得好的可以接着挖，不行的就换：',
+    ...exploreLines(B),
+    `3) \`feed --n ${videosOf(st)}\` 选题（想逛就加 \`--explore "词1,词2"\`，≤${videosOf(st)} 条，逛的词最多占三成）→ 对这些跑 \`debrief --no-frames\`${videosOf(st) >= 10 ? '（这一趟是醒着狂刷的时段：多刷、快刷，像真人刷手机一样一条条过）' : ''}`,
     '   （按设置页的「口味权重」分配条数、偏好之间轮转；看过的/最近推过的自动排除，**不看播放量** ✓）',
     '   3.2) 如果你发现自己总在看同一类：不要自己改配置文件 —— 让主人去设置页「B站 → 口味权重 / 一键抓取」调低那个词、调高别的。',
     '   3.5) ⭐ 如果 `feed` 没有新内容（全是看过的/候选不够）→ **不要硬重复深读、不要为了凑数**；',
     '        写一段日记或扫一眼消息就按“轻醒”收工，保住这一趟的质量 ✓',
-    '4) 挑 2–3 条深读（完整 `debrief`，含抽帧）',
+    `4) 挑 ${deepOf(st)} 条深读（完整 \`debrief\`，含抽帧）`,
     // 2026-10-20：收藏 ≠ 低配的分享 ✓ 它是「我想留着」（内向），和分享（外向）并列
     '4.5) 深读的那几条里，如果某条「我想留着」→ `fav <BV> --reason "…" --dry` → `--go`',
     '     判据（缺一条就别收 ✗）：① 三个月后还会想点开 ② 说得出为什么留（≥6 字）③ 同类已 ≥2 条要 --better',
@@ -377,9 +500,11 @@ function wakePrompt(st, tools = '') {
     '     （每搭一条，脚本会自动给你发一条带【主动搭话】tag 的私信报备 ✓）',
     '     ⚠️ 别逐条盖楼、别跟人抬杠 —— 一句话说完就走 ✓',
     // 2026-10-21（用户定）：**每天一条动态** —— 写当天评分最高的那条
-    '4.9) ⭐ **记分**：深读过的每条都记一下 `score <BV> --score N --reason "…"`（0~20 分，没到 13 也记 ✓）',
+    `4.9) ⭐ **记分**：深读过的每条都记一下 \`score <BV> --score N --reason "…"\`（0~20 分，没到线也记 ✓；到 ${shareLine(B)} 分才能分享，代码会查）`,
     '     —— 今天的动态要从这里面挑"最高分那条"，不记分就发不出去 ✗',
-    `4.95) ⭐ **今天的一类动态（best）**：四类各一条，best 在 ${bestSlot} 起；其余三类等 dynTick 提醒（设置页关掉的类会跳过）`,
+    // 2026-11-18：动态只在设置页打开的类里出现（以前这两步无条件写进提示，关掉了她还会去试）。
+    ...(dynamicsEnabled(B) && K.best?.enabled !== false ? [
+    `4.95) ⭐ **今天的动态（best = 今天你评分最高、最对你口味的那条）**：${bestSlot} 起才能发，之前的趟只管看和记分`,
     '     `daily --kind best --text "…" --dry` → `--go`',
     '     ⚠️ 必须写**今天评分最高**的那条视频（工具会核对，给错直接拒 ✗）',
     `     ⚠️ 正文 **${K.best.minLen}~${K.best.maxLen} 字**，用你（当前人格卡）的口吻说这条视频 —— 吐槽、安利、讲自己想起什么都行，随意发挥 ✓`,
@@ -387,29 +512,51 @@ function wakePrompt(st, tools = '') {
     '        用"给大家推一条…""安利一下…"这种口吻；**不要 @ 主人、正文里也别 @ 任何人** ✗（工具会拒）',
     '     ⚠️ 配图自动挑：`~/.dsh/surfcore/bili/memes/` 里的表情包（随机）→ 没有就用这条视频的封面 ✓',
     '     ⚠️ 今天发过就再也发不了（跨天才重置）✗ 别反复试',
+    ] : []),
     // 2026-10-21（用户定）：第二条动态 —— 六款游戏的 AI 二创，按顺序轮换
-    '4.97) ⭐ **第二条动态：游戏 AI 二创**（每天一条，和上面那条互不占；设置页关掉就跳过）：',
+    ...(dynamicsEnabled(B) && K.game?.enabled !== false ? [
+    '4.97) ⭐ **第二条动态：游戏 AI 二创**（每天一条，和上面那条互不占）：',
     '     `gamefeed` 看今天轮到哪款游戏 + 候选（原神→鸣潮→绝区零→星铁→终末地→异环，脚本自动轮换）',
     '     → 挑 2~3 条 `debrief` 认真看质量（**别只看播放**）→ 挑一条真的做得好的',
     `     → \`daily --kind game --bvid <BV> --text "…" --dry\` → \`--go\`（正文 **${K.game.minLen}~${K.game.maxLen} 字**，要仔细评价）`,
     '     ⚠️ 工具会核对：必须是轮到的那个游戏 · 近 21 天 · 播放 ≥2000 · 赞/播 ≥2% · 标题/简介有 AI 二创信号',
     '     ⚠️ 也是**公开发给所有人**的，别 @ 人；挑不出来就在日记里写"今天没有值得推的"，别硬凑 ✗',
+    ] : []),
     // 2026-10-21（用户定）：**全局回复规则** —— 疑似被攻击/阴阳怪气一律不接，记账等审
     '4.99) ⭐⭐ **遇到攻击 / 阴阳怪气 → 一个字都别回，记待审**：',
     '     怀疑对面在骂你、嘲讽你、阴阳你（"就这?""AI 也来凑热闹""你懂什么""呵呵"…）→ **不回** ✗',
     '     `attack add --oid … --root … --parent … --who "对方昵称" --text "他的原话" [--suggest "你想回的"]`',
     '     —— 自动编号（今天第 1 条 = #1），并立刻私信报备给我；他晚上 11 点集中审，**批了才能回** ✓',
     '     ⚠️ 待审的不回，所以**不占任何回复额度**；我说"拒"就彻底不理 ✗',
+    // 2026-11-18：懂他 —— 他自己在看什么（只读他的观看历史）+ 他对她分享的反应（门槛跟着变）
+    ...ownerTasteLines(B),
     '5) 按「标尺」打分排序，只对第一名考虑分享；**先看 share.via**：',
     `   · 当前 share.via=${B.share?.via ?? 'dynamic'}；**默认 via=dynamic：发到自己的 B站 动态，不在评论区 @ 我** ✓`,
     '   · via=dynamic：`share-dynamic --bvid <BV> --text "<分享内容>" --score <N> --reason "<为什么值得分享>" --dry` → `--go`',
     '     - 会找这条视频已有的 AV 动态并**转发**：新动态 = 你的话 + **可点视频卡片**（找不到卡片会拒绝；`--allow-text` 才退“文字+链接”）',
     `     - 和四类动态**共用间隔**：任意两条 ≥${B.dynamics?.gapMin ?? 30} 分钟（命令会查 daily-dynamic.json，不够就拒 ✓）`,
     '     - 占用分享额度（≤shareDaily/天 · 同一视频 7 天一次），发完写 daily-dynamic.json 并报备 ✓',
-    '   · via=dm：**不发公开评论** ✗ → dm --msg "<分享内容> 视频：https://www.bilibili.com/video/<BV>/ " **--share --target BV…** --go ✓',
+    ...(B.share?.alsoComment === true
+      ? [
+        '   · via=dm（+ 也在视频下评论，2026-11-18 主人定）：① 先私信我 → dm --msg "<分享内容> 视频：https://www.bilibili.com/video/<BV>/ " **--share --target BV…** --go ✓',
+        '     ⏱ 私信里可以点出最好笑 / 最精彩的那一秒（比发图省事）：**只用 debrief 里弹幕热区 / 字幕给出的时间**，写「3:42 那段」并把链接写成 `…/video/<BV>/?t=秒数`；debrief 里没时间就别编',
+        '     ② 再在这条视频下面发一条**普通评论**（你自己想说的话，**不带 --share、不 @ 我**）：`comment --oid <aid> --bvid <BV> --message "…" --auto --go`',
+        '     ⚠️ 这一趟已经在这条视频下评论过了就**别再发第二条**（一条视频最多一条顶层评论，代码也会拒）',
+      ]
+      : ['   · via=dm：**不发公开评论** ✗ → dm --msg "<分享内容> 视频：https://www.bilibili.com/video/<BV>/ " **--share --target BV…** --go ✓']),
     `     ⚠️ 必须带 --share：与评论区 @ 共用同一本额度账（≤${B.quota?.shareDaily ?? 3}/天 · 同一视频 7 天一次）；不带就只是推送 ✗`,
     '     ⚠️ 必须带视频链接：链接里的 BV 就是「同一视频」的判重依据 ✓',
     '   · via=comment：comment --share --auto --reason … --score … --rank 1（旧功能，仍可用 ✓）',
+    ...(Number(B.share?.chatDaily) > 0 && !SILENT
+      ? [
+        `5.8) 💬 **找我唠两句**（2026-11-18 主人定：多在 B站 私信跟他聊）：这一趟刷到好笑的、想吐槽的、想起他的 → 直接私信我一句，像兄弟随口说话，`,
+        '     不用每条都带视频；**不带 --share**：`dm --msg "…" --chat --go`。没话就别硬聊 ✗',
+        `     ⚠️ 代码硬上限：闲聊今天 ${chatCapFor(currentMood(), B.share.chatDaily)} 句${chatCapFor(currentMood(), B.share.chatDaily) < B.share.chatDaily ? `（心情不好，比平时 ${B.share.chatDaily} 句少）` : ''}；**你主动私信我的（分享 + 闲聊）加起来一天 ${L.ownerDmDaily} 条**，回我的话不算 —— 到了会被拒`,
+        '     心情好就多找他；不爽就少找，**绝不**去问"你怎么不回我"。想起你们之间的梗可以用一个（`joke list` / `joke use --id N`）。',
+      ]
+      : []),
+    // 2026-11-18：关注 UP —— 同一个 UP 老是对胃口才关（代码判断够不够格）
+    '5.9) 偶尔跑一下 `follow --suggest`：有够格的 UP（同一个人 14 天里好几条都对你胃口）想关就 `follow --mid <mid> --dry` → `--go`（一天最多 2 个）',
     '6) 写两本日记（散文体 + 表格 ✓ 私人那本写「偏好校准」）',
     // ⭐ 2026-10-18 主人定：每轮流程**最后**扫一遍"有没有没回的评论" → 有就**一起**推给我 ✓
     '7) ⭐ `comment-digest --hours 24` —— **每轮最后都要扫**：有没回的评论就**一起**推给我（不是一条条报 ✗）',
@@ -767,6 +914,15 @@ export function startScheduler(ctx, opts) {
           `[skip-check] ${new Date().toISOString()} fired=${st.fired} at=${st.at} endAt=${st.endAt} nowMin=${nowMin()} pass=${!st.fired && nowMin() >= Number(st.at ?? st.endAt ?? 0)}\n`)
       } catch {}
     }
+    // 2026-11-18（用户）：夜里那个窗口设了 quietSkip → 掷到「不看」就是真睡着：不叫醒、不写日记、不私信，只记一笔。
+    if (st && st.date === t && st.action === 'skip' && st.quietSkip === true && !st.fired && nowMin() >= Number(st.at ?? st.endAt ?? 0)) {
+      if (st.slotId) markScheduleSlot(st, st.slotId, 'skipped', nowMin())
+      writeState({ ...st, slots: Array.isArray(st.slots) ? st.slots : [], fired: true, done: false })
+      log(st.tired
+        ? `[bili-whale] ${st.atText ?? ''} ${st.reason || '累了，这趟不刷'}（精力 ${st.energy ?? '?'}/100，心情 ${st.moodValue ?? 0}）`
+        : `[bili-whale] ${st.atText ?? ''} 睡着了没醒（窗口 ${st.window ?? '?'}，不看概率 ${Math.round(Number(st.slots?.find?.((s) => s.id === st.slotId)?.skipChance ?? 0) * 100)}%）`)
+      return
+    }
     if (st && st.date === t && st.action === 'skip' && !st.fired && nowMin() >= Number(st.at ?? st.endAt ?? 0)) {
       waking = true
       try {
@@ -902,6 +1058,7 @@ export function startScheduler(ctx, opts) {
     const TOOL_CMD = `node "${biliMjs}"`
     const toolLine = () => `［工具］所有命令都用这一条：\`${TOOL_CMD} <子命令>\`（提示里写 "bili.mjs" 的都指它）—— 别去别处找 ✗`
 
+    let lastIgnoreCheckAt = 0
     async function dmTick() {
       if (!interactEnabled()) return
       if (dmBusy) return
@@ -909,6 +1066,17 @@ export function startScheduler(ctx, opts) {
       if (await budgetBlockedNow('私信叫醒')) return
       let cfg
       try { cfg = JSON.parse(fs.readFileSync(CFG_FILE_REF, "utf8")) } catch { cfg = {} }
+      // 2026-11-18：她主动发的过了几小时他没回、而他今天明明找过她 → 心情 -1（不冤枉：0~8 点发的不算，一天最多扣 3）。5 分钟看一次，纯本地文件。
+      if (Date.now() - lastIgnoreCheckAt > 5 * 60_000) {
+        lastIgnoreCheckAt = Date.now()
+        try {
+          const file = path.join(platformDir(), 'mood.json')
+          const before = readMood(file)
+          const r = checkIgnored(before, { cfg: cfg.mood ?? {} })
+          if (JSON.stringify(r.state.pending) !== JSON.stringify(before.pending)) writeMood(file, r.state)
+          if (r.applied) log(`[bili-whale] 心情 ${r.applied}：她主动发的他一直没回`)
+        } catch {}
+      }
       const L = cfg.listen ?? {}
       if (!L.dm) return
       if (Date.now() - lastDmAt < 5_000) return   // 2026-10-19：原来 60s 和定时器叠成双层节流 → 最坏 2 分钟 ✗ 改成 5s
@@ -927,11 +1095,28 @@ export function startScheduler(ctx, opts) {
           ? (j.items ?? [])
           : [{ mid: j.mid, name: j.name, text: j.text, ts: j.ts }]
         if (!items.length) return
+        // 2026-11-18：主人刚私信她 → 记一笔；30 分钟内她用 `dm --reply` 回主人不占「自动私信主人」上限（上限只管她主动找他）。
+        const ownerItems = items.filter((it) => String(it.mid) === ownerMid)
+        let ownerExtra = []
+        if (ownerItems.length) {
+          try { fs.writeFileSync(path.join(platformDir(), 'owner-last-dm.json'), `${JSON.stringify({ at: new Date().toISOString() })}\n`) } catch {}
+          // 心情：他回了她之前主动发的 → +1；然后给她一段「现在心情 + 判断他这句 + 一起看他发的视频」
+          let moodValue = 0
+          try {
+            const file = path.join(platformDir(), 'mood.json')
+            const r = ownerReplied(readMood(file), { cfg: cfg.mood ?? {} })
+            writeMood(file, r.state)
+            moodValue = decayedMood(r.state, Date.now(), cfg.mood ?? {})
+          } catch {}
+          let bvids = []
+          try { bvids = await newWatchTogether(ownerItems.map((it) => it.text).join(' ')) } catch {}
+          ownerExtra = ownerDmLines({ moodValue, bvids, minScore: Number(cfg.share?.minScore ?? 13) })
+        }
         const block = items.slice(0, 5).map((it) => {
           const mine = String(it.mid) === ownerMid
           const who = `${it.name || "mid " + it.mid}（${it.mid}）`
           return mine
-            ? `· 主人 ${who} 说：${String(it.text ?? "").slice(0, 300)}\n  → 直接回：\`dm --msg "…" --go\` ✓（不用审核）；而且要比平时更温柔：先回应关心、再答内容，不杠不顶嘴`
+            ? `· 主人 ${who} 说：${String(it.text ?? "").slice(0, 300)}\n  → 直接回：\`dm --msg "…" --reply --go\` ✓（不用审核；带 --reply 是回他的话，不占「主动私信他」的上限）；像兄弟接话，先回应他说的，不杠不顶嘴`
             : `· ${who} 说：${String(it.text ?? "").slice(0, 300)}\n  → 回：\`dm --to ${it.mid} --msg "…" --dry\` → \`--go\`（≤200 字 · 一人一天 3 条 · 一天共 12 条 · **只能回不能主动发** ✓）`
         })
         await ensureSession()
@@ -948,8 +1133,9 @@ export function startScheduler(ctx, opts) {
               "",
               ...block,
               "",
+              ...(ownerExtra.length ? [...ownerExtra, ""] : []),
               "按 AGENTS.md「私信」做（不要等我说话，直接做）：",
-              "1) 主人 → **直接回，不用审核** ✓，要比平时更温柔（先回应关心，不顶嘴）；其他人 → `dm --to <mid>` 回复（**只回不主动发** ✓）",
+              "1) 主人 → **直接回，不用审核** ✓（用 `dm --msg \"…\" --reply --go`），像兄弟接话，按你现在的心情说；其他人 → `dm --to <mid>` 回复（**只回不主动发** ✓）",
               "2) 一两句就够 —— 私信是聊天，不是评论区 ✗",
               "3) 吵架 / 要隐私 / 要你代表主人承诺 / 明显是广告或引流 → **不回** ✗（直接不理，别解释）",
               "4) 回完把对方说的写进日记「偏好校准」✓",
@@ -1338,7 +1524,7 @@ export function startScheduler(ctx, opts) {
   const timerDyn = setInterval(() => { dynTick().catch(() => {}) }, 60_000)
   // 30 秒看一眼"到点没"（2026-10-18 测试期曾改 2.5 秒 ✓ 已还原 ✓），真正间隔由配置定 ✓
   const timer2 = setInterval(() => { listenTick().catch(() => {}) }, 30_000)
-  const timerDm = setInterval(() => { dmTick().catch(() => {}) }, 20_000)   // 2026-10-19: 60s -> 20s, 私信要像聊天; 每次只是一个 get_sessions 请求 很轻
+  const timerDm = setInterval(() => { dmTick().catch(() => {}) }, 10_000)   // 2026-10-19: 60s -> 20s, 私信要像聊天; 每次只是一个 get_sessions 请求 很轻
   const timer3 = setInterval(() => { liveTick().catch(() => {}) }, 60_000)     // 直播间：挂了就一直跑，断了自动重挂 ✓
   log(`[bili-whale] 自主生物钟已启动（每 ${TICK_MS / 1000}s tick · 会话 ${sessionId}）；监听 + 直播间监看都挂上了 ✓`)
 

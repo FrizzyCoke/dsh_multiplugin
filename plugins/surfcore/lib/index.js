@@ -24,7 +24,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import {
   ALIGN_FILE, BACKUP_DIR, BILI_AI_DIR, BILI_ALIGNMENT_FILE, BILI_CONFIG, BILI_CRED, BILI_DIR, BILI_MJS,
-  BILI_TOOLS_DIR, DSH_HOME, EXTENSIONS_DIR, MEMORY_DIR, PLUGIN_ROOT, PLUGIN_LOG, QQ_ALIGNMENT_BRIEF,
+  BILI_TOOLS_DIR, DSH_HOME, EXTENSIONS_DIR, MEMORY_DIR, PLUGIN_ROOT, PLUGIN_LOG, QQ_ALIGNMENT_BRIEF, localStamp,
   QQ_CONFIG, QQBOT_ROOT, STATE_DIR, UNIFIED_FILE, ensureDirs, findNodeExe, maskPath,
 } from './paths.js';
 import { resolvePersonaFile } from './persona.js';
@@ -74,6 +74,17 @@ import { createPetService, detectElectronPath, installElectronRuntime, ELECTRON_
 import { createPetChatService } from './pet-chat.js';
 import { createPetPurposeService } from './pet-purpose.js';
 import { createPetApiService } from './pet-api.js';
+import { createDshPetBridge, normalizeDshPetBridgeConfig } from './dsh-pet-bridge.js';
+import { createDshPetMenu } from './dsh-pet-menu.js';
+import { createQuickChat } from './quick-chat.js';
+import { createDailyRecap } from './daily-recap.js';
+import { createPetMove } from './pet-move.js';
+import { createAttachmentGc } from './attachment-gc.js';
+import { createHousekeeping } from './housekeeping.js';
+import { dueLines, readDates } from '../tools/lib/dates.mjs';
+import { createPetLife } from './pet-life.js';
+import { createScreenSource } from './screen-capture.js';
+import { createScreenWatch } from './screen-watch.js';
 import { createUpdatesService, resumePendingApply } from './updates.js';
 import { BILI_WORKSPACE_TITLE, biliWorkspacePath } from './bili-workspace.js';
 import {
@@ -126,7 +137,7 @@ const EXT_PREFIX = '/dsh-surfcore/ext';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 const pluginLog = (...args) => {
-  const line = `[${new Date().toISOString()}] ${args.map((a) => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')}\n`;
+  const line = `[${localStamp()}] ${args.map((a) => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')}\n`;
   try {
     fs.mkdirSync(STATE_DIR, { recursive: true });
     // 2026-10-22 审计：只 append 不轮转会无限增长。超过 2MB 就滚一份 .1（保留一代）。
@@ -259,9 +270,122 @@ export function apply(ctx) {
   });
   billing.start();
 
-  const petChat = createPetChatService({ ctx, stateDir: STATE_DIR, pluginLog, tokenBudget });
+  // 截图自动清理（lib/attachment-gc.js）：只清 SurfCore 自己存进 DSH 附件里的截图；2 天 / 50 MB。
+  const attachmentGc = createAttachmentGc({
+    dshHome: DSH_HOME,
+    stateDir: STATE_DIR,
+    readConfig: () => readUnified().config?.attachmentGc,
+    pluginLog,
+  });
+  // 所有会一直长的文件统一封顶（日志截尾、日记挪档案、快照/备份只留最新几个）。
+  const housekeeping = createHousekeeping({
+    surfDir: STATE_DIR,
+    charDir: () => path.dirname(activePlatformStateDir(BILI_DIR)),
+    readConfig: () => readUnified().config?.housekeeping,
+    pluginLog,
+  });
+  const petChat = createPetChatService({
+    ctx, stateDir: STATE_DIR, pluginLog, tokenBudget,
+    // 截图用完即删：存前查是不是别人的、存后记账、这次模型调用结束就删。
+    attachmentHooks: {
+      exists: (bytes) => attachmentGc.exists(bytes),
+      saved: (bytes) => attachmentGc.record(bytes),
+      done: (hashes) => attachmentGc.release(hashes),
+    },
+  });
   const petPurpose = createPetPurposeService({ chat: petChat, tokenBudget, pluginLog, callBridge });
+  // 他说过的日子（tools/lib/dates.mjs）：今天 / 明天到期的也进桌宠的 system prompt，跟 B站 同一份。
+  petChat.addContextSource(() => {
+    try { return dueLines(readDates(path.join(activePlatformStateDir(BILI_DIR), 'dates.json'))).join('\n'); } catch { return ''; }
+  });
+  const dshPetBridge = createDshPetBridge({
+    ctx,
+    chat: petChat,
+    readConfig: () => readUnified().config?.dshPetBridge,
+    currentDshUrl: () => currentDshUrl(),
+    dshPetUserRoot: path.join(DSH_HOME, 'dsh-pet'),
+    pluginLog,
+    // screenWatch 在下面才创建；这两个只在运行期（dsh-pet 来消息时）调用。
+    onUserMessage: (text, options) => screenWatch.onUserMessage(text, options),
+    extraSystem: () => screenWatch.dshPetHint(),
+    // 「往左走」「过来」→ 她真的走过去（lib/pet-move.js；每条桌宠消息多一次很小的判断）。
+    onMoveIntent: (text, petId) => petMove.onUserMessage(text, petId),
+  });
+  const petMove = createPetMove({
+    chat: petChat,
+    readConfig: () => readUnified().config?.petMove,
+    currentDshUrl: () => currentDshUrl(),
+    pluginLog,
+  });
+  const screenSource = createScreenSource({
+    dshHome: DSH_HOME,
+    exe: () => readUnified().config?.screenWatch?.windowsMcpExe || '',
+    scale: () => Number(readUnified().config?.screenWatch?.scale) || 0.5,
+    log: pluginLog,
+  });
+  const screenWatch = createScreenWatch({
+    chat: petChat,
+    source: screenSource,
+    readConfig: () => readUnified().config?.screenWatch,
+    focusEnabled: () => Boolean(petChat.status()?.focus?.enabled),
+    tokenBudget,
+    pluginLog,
+    // 有桌宠在：surfpet 连着，或 dsh-pet 有显示中的宠物（知更鸟关掉 = display none → 不算）。
+    petPresent: () => petChat.online().online === true || petChat.frontendOnline() === true,
+  });
+  // dsh-pet 右键菜单：看屏幕 开/关、高/中/低频、现在看一眼。
+  const dshPetMenu = createDshPetMenu({
+    readScreenWatch: () => readUnified().config?.screenWatch || {},
+    saveScreenWatch: (patch) => saveUnified({ screenWatch: patch }),
+    bridgeEnabled: () => normalizeDshPetBridgeConfig(readUnified().config?.dshPetBridge).enabled,
+    currentDshUrl: () => currentDshUrl(),
+    onChanged: () => screenWatch.kick(),
+    onLookNow: () => { void screenWatch.lookOnce({ force: true, deliver: true }); },
+    notify: (text) => { void dshPetBridge.broadcast(text); },
+    pluginLog,
+  });
+  // 桌宠的生活（lib/pet-life.js）：心情上脸、跟着作息睡觉、她在 B站 干了啥有反应。不调模型。
+  const petLife = createPetLife({
+    readConfig: () => readUnified().config?.petLife,
+    readNight: () => { try { return JSON.parse(fs.readFileSync(BILI_CONFIG, 'utf8')).night ?? {}; } catch { return {}; } },
+    biliDir: () => activePlatformStateDir(BILI_DIR),
+    currentDshUrl: () => currentDshUrl(),
+    lastChatAt: () => Math.max(Number(petChat.lastActivity().lastChatAt) || 0, Number(dshPetBridge.status().lastRecallAt) || 0),
+    broadcast: (text) => dshPetBridge.broadcast(text),
+    pluginLog,
+  });
+  // 晚上随口说一句今天在 B站 刷到啥（lib/daily-recap.js；一天最多一次）。
+  const dailyRecap = createDailyRecap({
+    chat: petChat,
+    readConfig: () => readUnified().config?.dailyRecap,
+    biliDir: () => activePlatformStateDir(BILI_DIR),
+    stateDir: STATE_DIR,
+    tokenBudget,
+    pluginLog,
+    petPresent: () => petChat.online().online === true || petChat.frontendOnline() === true,
+  });
+  // 系统级快捷键 + 置顶小输入框（独立小进程，见 lib/quick-chat.js）。
+  const quickChat = createQuickChat({
+    chat: petChat,
+    screenSource,
+    readConfig: () => readUnified().config?.quickChat,
+    readScreenWatch: () => readUnified().config?.screenWatch || {},
+    screenWatch,
+    bridge: dshPetBridge,
+    bridgeEnabled: () => normalizeDshPetBridgeConfig(readUnified().config?.dshPetBridge).enabled,
+    currentDshUrl: () => currentDshUrl(),
+    dshHome: DSH_HOME,
+    stateDir: STATE_DIR,
+    pluginLog,
+    notify: (text) => { void dshPetBridge.broadcast(text); },
+  });
   const petApi = createPetApiService({
+    screenWatch,
+    dshPetBridge,
+    dshPetMenu,
+    quickChat,
+    dailyRecap,
+    storage: { status: () => ({ ok: true, housekeeping: housekeeping.status(), attachments: attachmentGc.status() }), run: () => ({ ok: true, housekeeping: housekeeping.run(), attachments: attachmentGc.sweep() }) },
     chat: petChat,
     purpose: petPurpose,
     petService,
@@ -4332,6 +4456,14 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
   petHostTimer.unref?.();
   // 目的机制（桌宠载体）：carrier=pet 时由这里每 60 秒 tick；carrier=qq 时它自己会退出。
   try { petPurpose.start(); } catch (error) { pluginLog('[pet-purpose] 启动失败：', String(error?.message ?? error)); }
+  try { dshPetBridge.start(); } catch (error) { pluginLog('[dsh-pet-bridge] 启动失败：', String(error?.message ?? error)); }
+  try { screenWatch.start(); } catch (error) { pluginLog('[screen-watch] 启动失败：', String(error?.message ?? error)); }
+  try { dshPetMenu.start(); } catch (error) { pluginLog('[dsh-pet-menu] 启动失败：', String(error?.message ?? error)); }
+  try { quickChat.start(); } catch (error) { pluginLog('[quick-chat] 启动失败：', String(error?.message ?? error)); }
+  try { dailyRecap.start(); } catch (error) { pluginLog('[daily-recap] 启动失败：', String(error?.message ?? error)); }
+  try { attachmentGc.start(); } catch (error) { pluginLog('[attachment-gc] 启动失败：', String(error?.message ?? error)); }
+  try { housekeeping.start(); } catch (error) { pluginLog('[housekeeping] 启动失败：', String(error?.message ?? error)); }
+  try { petLife.start(); } catch (error) { pluginLog('[pet-life] 启动失败：', String(error?.message ?? error)); }
 
   // 启动后异步做的事（不阻塞插件激活）
   void activateExtensions();
@@ -4358,6 +4490,14 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     try { scheduler?.stop?.(); } catch {}
     try { updates.dispose(); } catch {}
     try { petPurpose.stop?.(); } catch {}
+    try { dshPetBridge.stop(); } catch {}
+    try { void screenWatch.stop(); } catch {}
+    try { void dshPetMenu.stop(); } catch {}
+    try { quickChat.stop(); } catch {}
+    try { dailyRecap.stop(); } catch {}
+    try { attachmentGc.stop(); } catch {}
+    try { housekeeping.stop(); } catch {}
+    try { petLife.stop(); } catch {}
     if (petHostTimer) clearInterval(petHostTimer);
     try { sessionEventOff?.(); } catch {}
     try { billing.dispose(); } catch {}
