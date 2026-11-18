@@ -168,20 +168,27 @@ await ok('方向解析 + 目标位置夹在屏幕内', () => {
   assert.equal(parseDirection(' Left '), 'left'); assert.equal(parseDirection('none'), null); assert.equal(parseDirection('往左'), null);
   assert.equal(targetX(0.6, 'left'), 0.35); assert.equal(targetX(0.1, 'left'), 0.05); assert.equal(targetX(0.9, 'right'), 0.95); assert.equal(targetX(0.2, 'center'), 0.5);
 });
-await ok('走过去：读当前位置 → line 模式走；没显示在桌面 → 带 code，不乱走', async () => {
+await ok('走过去：先朝那边播跑步动画、再走（不是凭空平移）；没显示在桌面 → 带 code，不乱动', async () => {
   const posts = [];
   const mk = (pose) => createPetMove({
-    chat: {}, readConfig: () => ({}), currentDshUrl: () => 'http://dsh',
+    chat: {}, readConfig: () => ({}), currentDshUrl: () => 'http://dsh', leadMs: 0,
     fetchImpl: async (url, init) => {
       if (String(url).includes('/pose')) return { json: async () => pose };
-      posts.push({ url: String(url), body: JSON.parse(init.body) });
+      posts.push({ route: String(url).replace(/^.*\/dsh-pet-7340/, '').replace(/\?.*$/, ''), body: JSON.parse(init.body) });
       return { status: 200, json: async () => ({ ok: true }) };
     },
   });
   const r = await mk({ ok: true, x: 0.6, y: 0.9 }).move('main', 'left');
-  assert.equal(r.ok, true); assert.equal(posts[0].body.x, 0.35); assert.equal(posts[0].body.mode, 'line'); assert.ok(posts[0].body.duration > 400);
+  assert.equal(r.ok, true); assert.equal(r.facing, 'left');
+  assert.deepEqual(posts.map((p) => p.route), ['/anim', '/position'], '先动画后位移');
+  assert.equal(posts[0].body.name, '原地左转奔跑'); assert.equal(posts[0].body.facing, 'left');
+  assert.equal(posts[1].body.x, 0.35); assert.equal(posts[1].body.mode, 'line'); assert.ok(posts[1].body.duration >= 1200);
+  posts.length = 0;
+  const right = await mk({ ok: true, x: 0.2, y: 0.9 }).move('main', 'otherside');
+  assert.equal(right.facing, 'right'); assert.equal(posts[1].body.x, 0.5, '没说方向：往另一边挪');
+  posts.length = 0;
   const n = await mk({ ok: false, reason: 'pet-not-displayed', message: '没显示' }).move('main', 'left');
-  assert.equal(n.ok, false); assert.equal(n.code, 'petmove.no-desktop'); assert.equal(posts.length, 1);
+  assert.equal(n.ok, false); assert.equal(n.code, 'petmove.no-desktop'); assert.equal(posts.length, 0);
 });
 await ok('关掉就不判断（不花 token）', async () => {
   let asked = 0;
