@@ -27,6 +27,9 @@ import {
   bvSetFromTexts, candidateScore, filterRecentlyPicked, normalizePreferences,
   preferenceHits, prunePickedMap, safeNumber, searchPlan, selectDiverse,
 } from '../lib/feed-core.mjs'
+import { appendExploreLog, withExploreHits, exploreEntries, exploreSummary, exploreSummaryLines, normalizeExploreTerms, readExploreLog } from '../lib/explore.mjs'
+import { loadScores } from '../lib/scores.mjs'
+import { ownerSeen, refreshOwnerHistory } from '../lib/owner-taste.mjs'
 
 const argv = process.argv.slice(2)
 const opt = {}
@@ -52,12 +55,25 @@ const feedPicks = biliState('feed-picks.json')
 
 // ── ① 偏好：全量参与，按权重（不再 slice(0,6)）────────────────────────────
 const cfg = config()
-const { entries, enabled, disabled } = normalizePreferences({
+const { entries, enabled: baseEnabled, disabled } = normalizePreferences({
   like: cfg.preferences?.like ?? [],
   keywords: cfg.preferences?.keywords ?? [],
   weights: cfg.preferences?.weights ?? {},
 })
-if (!enabled.length) {
+// ── ①b 出去逛（2026-11-18）：她按自己的记忆临时加 0~2 个方向；硬规矩在 lib/explore.mjs ──
+const EXPLORE_LOG = biliState('explore-log.json')
+if (opt['explore-status']) {
+  const lines = exploreSummaryLines(exploreSummary(readExploreLog(EXPLORE_LOG), loadScores()), Number(cfg.share?.minScore ?? 13))
+  console.log(lines.length ? `最近出去逛的方向：\n${lines.join('\n')}` : '还没出去逛过（feed --explore "词" 试试）')
+  process.exit(0)
+}
+const exploreAsk = opt.explore === true ? '' : String(opt.explore ?? '')
+const { terms: exploreTerms, rejected: exploreRejected } = normalizeExploreTerms(exploreAsk, cfg.preferences?.dislike ?? [])
+for (const r of exploreRejected) console.error(`[出去逛] 「${r.term}」不搜：${r.why}`)
+const explore = exploreEntries(exploreTerms, baseEnabled)
+if (explore.length) console.error(`[出去逛] 今天多搜：${explore.map((e) => `${e.label}×${e.weight}`).join(' · ')}（合计最多占三成，口味权重说了算）`)
+const enabled = [...baseEnabled, ...explore]
+if (!baseEnabled.length && !explore.length) {
   console.error('（没有启用的偏好：所有关键词权重为 0 或列表为空 → 只从热门/排行/关注里挑，且最多 1 条）')
 }
 
@@ -94,6 +110,14 @@ try {
     .filter((e) => String(e.videoTitle ?? '').trim())
   for (const e of (fb.events ?? [])) if (e?.bv) { seen.add(e.bv); likedBVs.add(e.bv) }
 } catch { /* 没有反馈就零加权 */ }
+
+// ── ②b 他自己看过的（2026-11-18）：只读他的观看历史（2 小时缓存），他看过的不推给他 ─────────
+let ownerSeenCount = 0
+try {
+  const r = await refreshOwnerHistory({ credFile: accountBili('owner-credentials.json'), cacheFile: biliState('owner-history.json') })
+  if (r.ok) { for (const bv of ownerSeen(biliState('owner-history.json'))) if (!seen.has(bv)) { seen.add(bv); ownerSeenCount += 1 } }
+  else if (r.code !== 'owner-watch.no-login') console.error(`（他的观看历史这次没拉到：${r.error}；不影响选题）`)
+} catch { /* 拉不到不影响选题 */ }
 
 let pickMap = {}
 try {
@@ -222,7 +246,7 @@ const uniq = [...new Map(pool.map((x) => [x.bv, x])).values()]
 
 const recentFiltered = filterRecentlyPicked(uniq, pickMap, { now: Date.now(), days: RECENT_DAYS })
 const candidates = recentFiltered.map((x) => {
-  const hits = preferenceHits(x.t, enabled)
+  const hits = withExploreHits(preferenceHits(x.t, enabled), x, explore)
   return { ...x, _hits: hits, _score: candidateScore(x, hits, boostOf(x.t)) }
 })
 
@@ -238,6 +262,16 @@ if (REMEMBER && selection.picked.length) {
     fs.mkdirSync(path.dirname(feedPicks), { recursive: true })
     fs.writeFileSync(feedPicks, `${JSON.stringify({ version: 1, updatedAt: at, picks: next }, null, 2)}\n`)
   } catch { /* 备忘写不进去不影响本次选题 */ }
+}
+
+// ── ⑥b 记下这次出去逛推了哪几条（配合评分算这个方向值不值得接着挖）──
+if (explore.length) {
+  try {
+    const date = new Date().toLocaleDateString('sv-SE')
+    for (const e of explore) {
+      appendExploreLog(EXPLORE_LOG, { date, at: new Date().toISOString(), term: e.label, bvs: selection.picked.filter((x) => x._via === e.key).map((x) => x.bv) })
+    }
+  } catch (err) { console.error(`[出去逛] 记录没写进去（不影响这次选题）：${String(err?.message ?? err).slice(0, 80)}`) }
 }
 
 // ── ⑦ 输出 ────────────────────────────────────────────────────────────────
@@ -277,7 +311,7 @@ if (opt.json) {
   if (disabled.length) console.log(`已停用（权重 0）: ${disabled.map((e) => e.label).join(' · ')}`)
   console.log(`额外关键词: ${entries.filter((e) => e.kind === 'extra').map(weightText).join(' · ') || '（未设置）'}`)
   console.log(`反馈回流: 被赞 ${likedEvents.length} 条 · 她收藏 ${favItems.length} 条 → 学会 ${learnedTokens.length} 个主题词`)
-  console.log(`已看过/已评论过（已排除）: ${seen.size} 个 BV（其中观看历史补 ${watchSeen} 个）`)
+  console.log(`已看过/已评论过（已排除）: ${seen.size} 个 BV（其中观看历史补 ${watchSeen} 个、他自己看过的 ${ownerSeenCount} 个）`)
   if (RECENT_DAYS > 0) console.log(`最近 ${RECENT_DAYS} 天推过但没看的（本轮避开）: ${uniq.length - recentFiltered.length} 个`)
   console.log(`候选池: ${pool.length} 条 → 去重去已看/最近推过后 ${candidates.length} 条`)
   console.log(`本轮配额（共 ${N} 条，每条偏好最多 ${PER} 条）: ${quotaText.join(' · ') || '（没有命中偏好的候选）'}`)
