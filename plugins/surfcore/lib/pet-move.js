@@ -10,7 +10,8 @@
 
 const DIRS = ['left', 'right', 'center', 'leftedge', 'rightedge', 'otherside', 'none'];
 // 走路用 dsh-pet 自己的跑步动画（它的 moves 里就是这个；起步约 1.75 秒后才开始位移）
-export const WALK_ANIM = '原地左转奔跑';
+export const WALK_ANIM = '螃蟹走路';  // dsh-pet moves.actions 里的走路（近）
+export const RUN_ANIM = '原地左转奔跑'; // 跑（远）
 export const WALK_LEAD_MS = 1750;
 
 export function normalizePetMoveConfig(raw) {
@@ -43,7 +44,7 @@ export const MOVE_CLASSIFIER = [
   '例：「往左走」→ left neutral；「你真笨」→ none blame；「哈哈哈你太逗了」→ none funny。',
 ].join('\n');
 
-export function createPetMove({ chat, readConfig, currentDshUrl, pluginLog = () => {}, fetchImpl = (...a) => fetch(...a), leadMs = WALK_LEAD_MS, onTone = null, toneEnabled = () => false } = {}) {
+export function createPetMove({ chat, readConfig, currentDshUrl, pluginLog = () => {}, fetchImpl = (...a) => fetch(...a), pollMs = 500, leadWaitMs = 2200, onTone = null, toneEnabled = () => false } = {}) {
   const cfg = () => { try { return normalizePetMoveConfig(readConfig()); } catch { return normalizePetMoveConfig({}); } };
   let last = { at: 0, text: '', dir: null, ok: null, error: '' };
   const base = () => String(currentDshUrl() || '').replace(/\/+$/, '');
@@ -55,33 +56,66 @@ export function createPetMove({ chat, readConfig, currentDshUrl, pluginLog = () 
     return { dir: parseDirection(words[0]), tone: parseTone(words.slice(1).join(' ')) };
   }
 
-  async function move(petId, dir) {
-    const q = `pet=${encodeURIComponent(petId)}`;
-    const pose = await (await fetchImpl(`${base()}/dsh-pet-7340/pose?${q}`, { signal: AbortSignal.timeout(4000) })).json();
-    if (pose?.ok !== true) return { ok: false, code: 'petmove.no-desktop', error: pose?.message || '宠物没显示在桌面上' };
-    const from = Number.isFinite(Number(pose.x)) ? Number(pose.x) : 0.5;
-    const x = targetX(from, dir);
-    const y = Number.isFinite(Number(pose.y)) ? Number(pose.y) : 0.9;
-    if (Math.abs(x - from) < 0.01) return { ok: true, x, y, duration: 0, already: true };
-    // 像她自己走：先朝要去的方向播跑步动画，起步那一下过了再开始位移（不是凭空平移）
-    const facing = x < from ? 'left' : 'right';
-    try {
-      await fetchImpl(`${base()}/dsh-pet-7340/anim?${q}&surface=any`, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name: WALK_ANIM, facing }), signal: AbortSignal.timeout(4000),
-      });
-      if (leadMs > 0) await new Promise((r) => setTimeout(r, leadMs));
-    } catch { /* 动画没播成也照样走 */ }
-    const duration = Math.round(Math.min(3200, Math.max(1200, Math.abs(x - from) * 6000)));
-    const res = await fetchImpl(`${base()}/dsh-pet-7340/position?${q}&surface=any`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ x, y, mode: 'line', duration }),
+  // 2026-11-18 用户：要用 dsh-pet 自带的走路，不是平移；还要能打断她正在做的动作。
+  // dsh-pet 的规则（runtime/electron-helper/events.js applyAnimLeaf → sprite.onMenuAction → tryMove）：
+  //   /anim 给一个「走位动作名」+ facing → 先转向、再按它自己的走路动画真走一段（方向 = 朝向，距离它自己定）。
+  //   正在走 / 被抛着时它会回 busy 不理 → 先发一个原地 instant 的 /position：moveToCenter 会 stopMove/stopThrow 打断。
+  async function call(route, q, body) {
+    const res = await fetchImpl(`${base()}/dsh-pet-7340${route}?${q}${body ? '&surface=any' : ''}`, {
+      method: body ? 'POST' : 'GET',
+      ...(body ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}),
       signal: AbortSignal.timeout(4000),
     });
-    const body = await res.json().catch(() => ({}));
-    if (body?.ok !== true) return { ok: false, code: 'petmove.rejected', error: `${body?.reason ?? ''} ${body?.message ?? ''}`.trim() || `HTTP ${res.status}` };
-    return { ok: true, x, y, duration, facing };
+    return res.json().catch(() => ({}));
+  }
+
+  /**
+   * 等她这一步走完。真机实测（2026-11-18）：起步约 2 秒原地不动，之后慢慢挪 6 秒多 ——
+   * 所以先等过起步，再要位置连续 3 次不变（约 1.5 秒）才算到；最多等 20 秒。
+   */
+  async function settle(q, startX) {
+    if (leadWaitMs > 0) await new Promise((r) => setTimeout(r, leadWaitMs));
+    let last = startX;
+    let still = 0;
+    for (let i = 0; i < 40; i += 1) {
+      if (pollMs > 0) await new Promise((r) => setTimeout(r, pollMs));
+      const p = await call('/pose', q);
+      if (p?.ok !== true) return last;
+      const x = Number(p.x);
+      if (Number.isFinite(x) && Math.abs(x - last) < 0.002) { still += 1; if (still >= 3) return x; } else still = 0;
+      if (Number.isFinite(x)) last = x;
+    }
+    return last;
+  }
+
+  async function move(petId, dir) {
+    const q = `pet=${encodeURIComponent(petId)}`;
+    const pose = await call('/pose', q);
+    if (pose?.ok !== true) return { ok: false, code: 'petmove.no-desktop', error: pose?.message || '宠物没显示在桌面上' };
+    const from = Number.isFinite(Number(pose.x)) ? Number(pose.x) : 0.5;
+    const y = Number.isFinite(Number(pose.y)) ? Number(pose.y) : 0.9;
+    const target = targetX(from, dir);
+    // 「往左 / 往右 / 往那边一点」走一步就行；「到中间 / 到最边上」朝目标多走几步
+    const steps = ['left', 'right', 'otherside'].includes(dir) ? 1 : 4;
+    // ① 打断她手上的动作（原地 instant，不动位置）
+    const stop = await call('/position', q, { x: from, y, mode: 'instant' });
+    if (stop?.ok !== true) return { ok: false, code: 'petmove.rejected', error: `${stop?.reason ?? ''} ${stop?.message ?? ''}`.trim() || '打断不了当前动作' };
+    let cur = from;
+    let walked = 0;
+    for (let i = 0; i < steps; i += 1) {
+      if (steps > 1 && Math.abs(target - cur) < 0.05) break;
+      const goLeft = steps === 1 ? (dir === 'left' || (dir === 'otherside' && from >= 0.5)) : target < cur;
+      // 「往左一点」走；「往那边去 / 到中间 / 到边上」还远就跑
+      const far = steps === 1 ? dir === 'otherside' : Math.abs(target - cur) > 0.2;
+      // ② 转向 + 用它自带的走路动画真走（远就跑、近就走）
+      const r = await call('/anim', q, { name: far ? RUN_ANIM : WALK_ANIM, facing: goLeft ? 'left' : 'right' });
+      if (r?.ok !== true) return { ok: walked > 0, code: 'petmove.rejected', error: `${r?.reason ?? ''} ${r?.message ?? ''}`.trim() || '走不了', x: cur };
+      walked += 1;
+      const next = await settle(q, cur);
+      if (Math.abs(next - cur) < 0.005) break; // 走不动了（到边了）
+      cur = next;
+    }
+    return { ok: true, x: Math.round(cur * 1000) / 1000, steps: walked, facing: cur < from ? 'left' : 'right' };
   }
 
   /** 联动 recall 里调：不阻塞她回话（判断 + 走路在后台）。 */
