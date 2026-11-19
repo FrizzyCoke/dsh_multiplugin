@@ -336,6 +336,32 @@ export function shareLine(B, { dir = platformDir() } = {}) {
   try { return effectiveMinScore(Number(B?.share?.minScore ?? 13), readMood(path.join(dir, 'mood.json'))).minScore } catch { return Number(B?.share?.minScore ?? 13) }
 }
 
+/**
+ * 2026-11-18：今天有到线、还没分享过的视频 → 点名让她发（以前只写「考虑分享」，她一次都没发过）。
+ * 只看今天的分（scores.json 按本地日期分组）；7 天内分享过的 BV 跳过（与闸门同一条判重）。
+ */
+export function shareDueLines(B, { dir = platformDir(), scores, now = new Date() } = {}) {
+  try {
+    if (B?.share?.enabled === false) return []
+    const bar = shareLine(B, { dir })
+    const day = now.toLocaleDateString('sv-SE')
+    let log = []
+    try { log = JSON.parse(fs.readFileSync(path.join(dir, 'quota.json'), 'utf8')).log ?? [] } catch {}
+    const since = now.getTime() - 7 * 86400000
+    const shared = new Set(log.filter((x) => x?.share && new Date(x.at).getTime() >= since)
+      .map((x) => (String(x.target ?? '').match(/BV[0-9A-Za-z]{10}/) ?? [])[0]).filter(Boolean))
+    const rows = ((scores ?? loadScores())[day] ?? [])
+      .filter((r) => r?.bv && Number(r.score) >= bar && !shared.has(r.bv))
+      .sort((a, b) => Number(b.score) - Number(a.score))
+    if (!rows.length) return []
+    const top = rows[0]
+    return [
+      `4.98) 📮 **今天还欠他一条分享**：${top.bv}（你打了 ${top.score} 分，门槛 ${bar}${top.reason ? `：${String(top.reason).slice(0, 40)}` : ''}）`,
+      '     → 这一趟**就发给他**（按下面 5) 的 share.via 方式），不是「考虑一下」✓ 一天到线的发一条就够，别全发',
+    ]
+  } catch { return [] }
+}
+
 /** 他最近自己在看的 + 他对分享的反应（读不到就不加）。 */
 export function ownerTasteLines(B, { dir = platformDir() } = {}) {
   try {
@@ -536,7 +562,8 @@ export function wakePrompt(st, tools = '') {
     '     ⚠️ 待审的不回，所以**不占任何回复额度**；我说"拒"就彻底不理 ✗',
     // 2026-11-18：懂他 —— 他自己在看什么（只读他的观看历史）+ 他对她分享的反应（门槛跟着变）
     ...ownerTasteLines(B),
-    '5) 按「标尺」打分排序，只对第一名考虑分享；**先看 share.via**：',
+    ...(SILENT ? [] : shareDueLines(B)),
+    `5) 按「标尺」打分排序，**第一名到线（≥${shareLine(B)}）就分享给我**（没到线就不发）；**先看 share.via**：`,
     `   · 当前 share.via=${B.share?.via ?? 'dynamic'}；**默认 via=dynamic：发到自己的 B站 动态，不在评论区 @ 我** ✓`,
     '   · via=dynamic：`share-dynamic --bvid <BV> --text "<分享内容>" --reason "<为什么值得分享>" --dry` → `--go`（分数用你 score 记过的，不用再报）',
     '     - 会找这条视频已有的 AV 动态并**转发**：新动态 = 你的话 + **可点视频卡片**（找不到卡片会拒绝；`--allow-text` 才退“文字+链接”）',
