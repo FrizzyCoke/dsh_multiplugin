@@ -5,6 +5,29 @@
 
 ---
 
+## 快照：2026-11-18 20:58 PST（知更鸟定制 · 分支 `dsh` @ `7a73a3d`，已推 `mine`）
+
+### 当前事实
+- 本机：DSH_HOME=`%APPDATA%\dsh-desktop\harness`（插件状态在 `harness/surfcore/`，角色 `characters/char-mwlapqya/bili/`）；
+  DSH 装在 `%LOCALAPPDATA%\Programs\DSH Desktop`；机器时区 PST（测试用 `scripts/_pin-tz.mjs` 钉 +08）。
+- 只在 `dsh` 分支提交，只推 `git push mine refs/heads/dsh:refs/heads/dsh`（不推 origin）；每次提交后重生清单 + `--verify-ref HEAD`。
+- 测试：插件 `npm test` 全过；`npm run test:audit` 153/153。工作区干净。
+
+### 今天做完的（详见 docs/cases/2026-11-18-*.md）
+- 专注模式（菜单第一项；关 dsh-pet 悄悄话/配图、桌宠闲聊、日报、桌面通知；**不影响 B站**）。
+- 桌宠「回完话才走」（dsh-pet 自带移动）+ 人设不复读。
+- whale-night `woke` 残留导致一天只醒一次 → 已修（`a4ca8d8`）。
+- 体检：向量失败日志去重、B站监听错误带原因、guard:check 自动找 DSH。
+- **分享从没发过** → `shareDueLines()` 点名今天到线未分享的视频（`4599bbf`）；**需重启 DSH 生效**。
+- 清掉 whale-log 里「主人不爱看二次元」误记（程序 bug 引起），备份 `backups/whale-log-before-anime-clear-*.jsonl`。
+
+### 下一步 / 待验证
+1. 重启 DSH 后，看 21:58 那趟她有没有 `dm --share` 发 BV13RT567EGQ（quota.json 出现 `share:true`）。
+2. **待用户决定**：guard:check 报 `missing-target`（新版 DSH 没有护栏补丁的目标代码）—— 要不要研究新版是否还需要；改 app.asar 必须先问。
+3. 未答复：share.minScore 12 → 11？
+
+---
+
 ## 快照：2026-11-05 17:45（向量记忆 UI / 一键启动自检 / 完整重建）
 
 ### 当前事实
